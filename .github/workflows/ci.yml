@@ -31,7 +31,10 @@ jobs:
 
       - uses: actions/setup-node@v4
         with:
-          node-version: "20"
+          # vite@8 requires Node ^20.19.0 || >=22.12.0 — pinning "20" let
+          # setup-node resolve to a pre-20.19 patch, which vitest failed
+          # to run under. 22 satisfies the floor unambiguously.
+          node-version: "22"
           cache: npm
           cache-dependency-path: frontend/package-lock.json
 
