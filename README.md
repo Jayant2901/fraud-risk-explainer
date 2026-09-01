@@ -323,6 +323,8 @@ risk-manager/
 │   ├── risk_explainer.py        <- SHAP wrapper: score -> top factors
 │   ├── entity_memory.py         <- rolling verdict history -> escalation state (in-process + Redis)
 │   ├── redis_utils.py           <- optional-Redis client factory + KeyedCache (idempotency/explanations)
+│   ├── decision_rules.py        <- decide_action() — shared by the live API and offline analyses
+│   ├── escalation_ablation.py   <- offline: does entity escalation actually help? (see below)
 │   └── llm_agent.py             <- Gemini (Google Gen AI API) agent, reasons over score + history
 ├── api/
 │   ├── main.py                  <- FastAPI JSON API wrapping the src/ modules
@@ -338,6 +340,7 @@ risk-manager/
 │   ├── test_api_auth.py          <- API_KEY auth, fail-closed behavior
 │   ├── test_rate_limit.py        <- 30/minute on /api/score
 │   ├── test_logging_utils.py     <- JSON formatter, request-id propagation, /metrics
+│   ├── test_escalation_ablation.py <- metric arithmetic (recall/false-flag-rate/precision)
 │   └── test_llm_agent.py         <- mocked Gemini client
 ├── requirements.txt              <- pinned, runtime only
 ├── requirements-dev.txt          <- + pytest/fakeredis/etc, includes requirements.txt
@@ -469,6 +472,47 @@ shared across restarts/workers too.
   route. Deliberately not behind `verify_api_key`: Prometheus scraping
   conventions assume network-level access control, not an application
   key, and it's operational data, not customer data.
+
+## Does entity escalation actually help?
+
+The entity-escalation feature (`src/entity_memory.py`) is the project's
+headline "agentic" claim: an entity with recent REVIEW/BLOCK verdicts
+gets watched more closely on its next transaction. That claim is
+measured, not just asserted — `src/escalation_ablation.py` replays the
+real chronological test set (118,108 transactions, the same split
+`train_model.py` uses) in time order through a fresh `EntityRiskMemory`,
+scoring every transaction two ways: **baseline** (raw model score only,
+escalation forced to `NORMAL`) vs. **escalation-adjusted** (exactly what
+the live system does today). Run it yourself with
+`python src/escalation_ablation.py`; the full output is saved to
+`models/escalation_ablation_report.txt`. The numbers below are from that
+actual run against the real trained model — not invented:
+
+| | Baseline (no escalation) | Escalation-adjusted (live system) |
+|---|---|---|
+| Recall (frauds flagged) | 0.8548 (3,474 / 4,064) | 0.8846 (3,595 / 4,064) |
+| False-flag rate (legit txns flagged) | 0.0917 (10,459 / 114,044) | 0.1700 (19,391 / 114,044) |
+
+Escalation catches **121 more fraudulent transactions** than the raw
+score alone (+2.98 points of recall) — but it does so by flagging
+**8,932 more legitimate transactions** (+7.83 points of false-flag
+rate). Isolating just the transactions where escalation history is what
+pushed the action higher than the raw score alone would have
+(`escalated_due_to_history == True`): there were **12,258** such flips,
+and only **407** of them (3.32%) were actually fraud.
+
+**Honest read:** at the current thresholds (`WATCH_THRESHOLD = 2`,
+`ELEVATED_THRESHOLD = 4` in `src/entity_memory.py`), escalation is a net
+recall win but a very blunt instrument — the overwhelming majority of
+what it flags is not fraud. It's defensible as a second-look signal
+feeding a human review queue (which is exactly how `decide_action()`
+uses it — pushing REVIEW to BLOCK, or ALLOW to REVIEW, never silently
+auto-blocking on escalation alone), but it should not be read as a
+precise fraud-ring detector in its current form. The most likely fix
+worth trying next is raising `WATCH_THRESHOLD`/`ELEVATED_THRESHOLD` and
+re-running this same ablation to see whether recall holds up as
+false-flag rate drops — that comparison is now a one-command rerun,
+not a re-architecture.
 
 ## Methodology notes (for the writeup / judges)
 

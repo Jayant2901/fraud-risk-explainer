@@ -47,6 +47,7 @@ from slowapi.middleware import SlowAPIMiddleware
 from slowapi.util import get_remote_address
 
 from logging_utils import configure_logging, RequestIDMiddleware
+from decision_rules import decide_action
 from risk_explainer import RiskExplainer
 from llm_agent import RiskExplainerAgent
 from entity_memory import create_entity_memory
@@ -132,6 +133,7 @@ def verify_api_key(provided_key: str | None = Security(_api_key_header)) -> None
 router = APIRouter(dependencies=[Depends(verify_api_key)])
 
 EVAL_REPORT_PATH = "models/eval_report.txt"
+ESCALATION_ABLATION_REPORT_PATH = "models/escalation_ablation_report.txt"
 
 # --- Singletons (model, explainer, agent, entity memory) ---------------
 # REDIS_URL is read once here, at process startup — same as any other
@@ -155,33 +157,6 @@ _explanations_cache = KeyedCache(_redis_client, prefix="riskmgr:explanations", t
 # escalation history and pushing them toward WATCH/ELEVATED on a
 # duplicate, not a second real transaction.
 _idempotency_cache = KeyedCache(_redis_client, prefix="riskmgr:idempotency", ttl_seconds=24 * 60 * 60)
-
-
-def decide_action(risk_score: float, escalation: dict) -> dict:
-    """Deterministic rule lookup — mirrors the thresholds the LLM agent's
-    system prompt (src/llm_agent.py) is instructed to follow. This function
-    itself is sub-millisecond; combined with the model score + SHAP call
-    ahead of it (~100-130ms measured locally on CPU), the full decision
-    path still lands orders of magnitude faster than the Gemini API
-    round-trip it deliberately does not wait for.
-
-    A real-time authorization path can't wait on an LLM call for that —
-    the decision that actually gates the transaction has to return fast.
-    The LLM is used afterward, asynchronously, only to produce a
-    human-readable explanation for the reviewer queue; it never gets to
-    change the action.
-    """
-    elevated = escalation.get("state") == "ELEVATED"
-    if risk_score >= 80:
-        action = "BLOCK"
-        escalated = False
-    elif risk_score >= 40:
-        action = "BLOCK" if elevated else "REVIEW"
-        escalated = elevated
-    else:
-        action = "REVIEW" if elevated else "ALLOW"
-        escalated = elevated
-    return {"action": action, "escalated_due_to_history": escalated}
 
 
 def _generate_explanation(verdict_id: str, risk_score: float, top_factors: list, escalation: dict):
@@ -374,6 +349,17 @@ def get_cost_analysis(
         },
         "params": {"fraud_loss": fraud_loss, "fp_cost": fp_cost},
     }
+
+
+@router.get("/api/escalation-ablation")
+def get_escalation_ablation():
+    if not os.path.exists(ESCALATION_ABLATION_REPORT_PATH):
+        return {
+            "report": None,
+            "message": "No ablation report yet — run `python src/escalation_ablation.py` to generate one.",
+        }
+    with open(ESCALATION_ABLATION_REPORT_PATH) as f:
+        return {"report": f.read(), "message": None}
 
 
 @app.get("/api/health")
