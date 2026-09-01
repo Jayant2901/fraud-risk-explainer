@@ -503,7 +503,7 @@ shared across restarts/workers too.
 
 ## Does the cost-optimal threshold hold up under different cost assumptions?
 
-`models/eval_report.txt` quotes one cost-optimal threshold (0.33) computed
+`models/eval_report.txt` quotes one cost-optimal threshold (0.34) computed
 from a single assumed cost pair (avg_fraud_loss = Rs 5,000, avg_fp_cost =
 Rs 150) — a real risk team's first question would be "how much does that
 threshold move if those two numbers are wrong?" `src/cost_sensitivity.py`
@@ -514,24 +514,25 @@ Run it yourself with `python src/cost_sensitivity.py`; output is saved to
 `models/cost_sensitivity_report.json` (consumed by `GET
 /api/cost-analysis/sensitivity` and the sensitivity table in the frontend's
 Cost Analysis tab) and `models/cost_sensitivity_report.txt`. The table
-below is the actual grid from that run — not invented:
+below is the actual grid from that run (against the current model, which
+includes the device/address graph features from Phase 3) — not invented:
 
 | avg_fraud_loss ↓ / avg_fp_cost → | Rs 75 | Rs 150 | Rs 225 | Rs 300 |
 |---|---|---|---|---|
-| **Rs 2,500** | 0.33 | 0.48 | 0.56 | 0.63 |
-| **Rs 5,000** | 0.22 | 0.33 | 0.42 | 0.48 |
-| **Rs 7,500** | 0.20 | 0.28 | 0.33 | 0.42 |
-| **Rs 10,000** | 0.16 | 0.22 | 0.28 | 0.33 |
+| **Rs 2,500** | 0.34 | 0.55 | 0.58 | 0.68 |
+| **Rs 5,000** | 0.23 | 0.34 | 0.38 | 0.55 |
+| **Rs 7,500** | 0.18 | 0.28 | 0.34 | 0.38 |
+| **Rs 10,000** | 0.13 | 0.23 | 0.28 | 0.34 |
 
-Across this 4x4 grid, the cost-optimal threshold ranges from **0.16 to
-0.63** — a 4x spread — depending entirely on where the two assumed costs
-actually fall within a plausible 0.5x-2x range. The single 0.33 figure
-quoted elsewhere in this README is the midpoint of that grid (the
+Across this 4x4 grid, the cost-optimal threshold ranges from **0.13 to
+0.68** — over a 5x spread — depending entirely on where the two assumed
+costs actually fall within a plausible 0.5x-2x range. The single 0.34
+figure quoted elsewhere in this README is the midpoint of that grid (the
 default Rs 5,000 / Rs 150 cell), not a precise, defensible number on its
 own. **Honest read:** the direction of the sensitivity is intuitive
 (costlier missed fraud pulls the threshold down toward flagging more;
 costlier false positives pushes it up toward flagging less), but the
-magnitude of the swing means this project's specific "0.33" shouldn't be
+magnitude of the swing means this project's specific "0.34" shouldn't be
 quoted as if it were exact — what should be quoted is that a real
 deployment needs real cost figures from finance/ops before the threshold
 number means anything precise.
@@ -549,20 +550,21 @@ escalation forced to `NORMAL`) vs. **escalation-adjusted** (exactly what
 the live system does today). Run it yourself with
 `python src/escalation_ablation.py`; the full output is saved to
 `models/escalation_ablation_report.txt`. The numbers below are from that
-actual run against the real trained model — not invented:
+actual run against the current trained model (which includes the
+device/address graph features from Phase 3) — not invented:
 
 | | Baseline (no escalation) | Escalation-adjusted (live system) |
 |---|---|---|
-| Recall (frauds flagged) | 0.8548 (3,474 / 4,064) | 0.8846 (3,595 / 4,064) |
-| False-flag rate (legit txns flagged) | 0.0917 (10,459 / 114,044) | 0.1700 (19,391 / 114,044) |
+| Recall (frauds flagged) | 0.8578 (3,486 / 4,064) | 0.8873 (3,606 / 4,064) |
+| False-flag rate (legit txns flagged) | 0.0922 (10,515 / 114,044) | 0.1689 (19,266 / 114,044) |
 
-Escalation catches **121 more fraudulent transactions** than the raw
-score alone (+2.98 points of recall) — but it does so by flagging
-**8,932 more legitimate transactions** (+7.83 points of false-flag
+Escalation catches **120 more fraudulent transactions** than the raw
+score alone (+2.95 points of recall) — but it does so by flagging
+**8,751 more legitimate transactions** (+7.67 points of false-flag
 rate). Isolating just the transactions where escalation history is what
 pushed the action higher than the raw score alone would have
-(`escalated_due_to_history == True`): there were **12,258** such flips,
-and only **407** of them (3.32%) were actually fraud.
+(`escalated_due_to_history == True`): there were **12,087** such flips,
+and only **389** of them (3.22%) were actually fraud.
 
 **Honest read:** at the current thresholds (`WATCH_THRESHOLD = 2`,
 `ELEVATED_THRESHOLD = 4` in `src/entity_memory.py`), escalation is a net
@@ -579,7 +581,7 @@ not a re-architecture.
 
 ## Is the model still good later in the test window?
 
-`models/eval_report.txt` quotes one ROC-AUC (0.9535) from one train/test
+`models/eval_report.txt` quotes one ROC-AUC (0.9540) from one train/test
 split and stops there — which quietly assumes a static model stays good
 forever, even though fraud is adversarial and non-stationary.
 `src/drift_analysis.py` checks that assumption directly: it takes the
@@ -593,22 +595,23 @@ to see how a static model's performance moves over time it hasn't seen.
 Run it yourself with `python src/drift_analysis.py`; output is saved to
 `models/drift_report.json` (consumed by `GET /api/drift-analysis` and
 the chart below) and `models/drift_report.txt`. The numbers below are
-from that actual run — not invented:
+from that actual run (against the current model, which includes the
+device/address graph features from Phase 3) — not invented:
 
 | Bucket (days into test window) | n | n_fraud | ROC-AUC | Precision | Recall |
 |---|---|---|---|---|---|
-| 0.0–7.0 | 18,525 | 636 | 0.9487 | 0.2145 | 0.8695 |
-| 7.0–14.0 | 21,360 | 662 | 0.9576 | 0.2068 | 0.8958 |
-| 14.0–20.9 | 19,697 | 562 | 0.9534 | 0.1758 | 0.8826 |
-| 20.9–27.9 | 21,020 | 736 | 0.9482 | 0.1942 | 0.8899 |
-| 27.9–34.9 | 19,824 | 724 | 0.9565 | 0.2178 | 0.8867 |
-| 34.9–41.9 | 17,682 | 744 | 0.9556 | 0.2391 | 0.8952 |
+| 0.0–7.0 | 18,525 | 636 | 0.9496 | 0.2197 | 0.8664 |
+| 7.0–14.0 | 21,360 | 662 | 0.9574 | 0.2080 | 0.8927 |
+| 14.0–20.9 | 19,697 | 562 | 0.9520 | 0.1817 | 0.8754 |
+| 20.9–27.9 | 21,020 | 736 | 0.9506 | 0.1989 | 0.8859 |
+| 27.9–34.9 | 19,824 | 724 | 0.9569 | 0.2253 | 0.8854 |
+| 34.9–41.9 | 17,682 | 744 | 0.9557 | 0.2461 | 0.8898 |
 
 **Honest read: no significant decay observed over this ~6-week window.**
-ROC-AUC stays in a tight band (0.9482–0.9576, a spread of only 0.0094)
-and recall stays in 0.87–0.90 throughout — there's no visible downward
+ROC-AUC stays in a tight band (0.9496–0.9574, a spread of only 0.0078)
+and recall stays in 0.87–0.89 throughout — there's no visible downward
 trend across the window, just noise-level bucket-to-bucket variation
-(precision swings a bit more, 0.176–0.239, consistent with precision
+(precision swings a bit more, 0.18–0.25, consistent with precision
 being more sensitive to the exact count of false positives in a smaller
 bucket). This is consistent with the test period being short (six
 weeks) and drawn from a single historical dataset rather than a live,

@@ -15,49 +15,49 @@
       "bucket": 0,
       "n": 18525,
       "n_fraud": 636,
-      "roc_auc": 0.9487,
-      "precision": 0.2145,
-      "recall": 0.8695
+      "roc_auc": 0.9496,
+      "precision": 0.2197,
+      "recall": 0.8664
     },
     {
       "bucket": 1,
       "n": 21360,
       "n_fraud": 662,
-      "roc_auc": 0.9576,
-      "precision": 0.2068,
-      "recall": 0.8958
+      "roc_auc": 0.9574,
+      "precision": 0.208,
+      "recall": 0.8927
     },
     {
       "bucket": 2,
       "n": 19697,
       "n_fraud": 562,
-      "roc_auc": 0.9534,
-      "precision": 0.1758,
-      "recall": 0.8826
+      "roc_auc": 0.952,
+      "precision": 0.1817,
+      "recall": 0.8754
     },
     {
       "bucket": 3,
       "n": 21020,
       "n_fraud": 736,
-      "roc_auc": 0.9482,
-      "precision": 0.1942,
-      "recall": 0.8899
+      "roc_auc": 0.9506,
+      "precision": 0.1989,
+      "recall": 0.8859
     },
     {
       "bucket": 4,
       "n": 19824,
       "n_fraud": 724,
-      "roc_auc": 0.9565,
-      "precision": 0.2178,
-      "recall": 0.8867
+      "roc_auc": 0.9569,
+      "precision": 0.2253,
+      "recall": 0.8854
     },
     {
       "bucket": 5,
       "n": 17682,
       "n_fraud": 744,
-      "roc_auc": 0.9556,
-      "precision": 0.2391,
-      "recall": 0.8952
+      "roc_auc": 0.9557,
+      "precision": 0.2461,
+      "recall": 0.8898
     }
   ]
 }

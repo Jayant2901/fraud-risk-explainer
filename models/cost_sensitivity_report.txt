@@ -5,21 +5,21 @@ Base assumptions: avg_fraud_loss = Rs 5,000, avg_fp_cost = Rs 150
 Grid: fraud_loss multipliers [0.5, 1.0, 1.5, 2.0] x fp_cost multipliers [0.5, 1.0, 1.5, 2.0]
 
   avg_fraud_loss    avg_fp_cost  optimal_threshold  savings_vs_0.5
-           2,500             75               0.33            9.4%
-           2,500            150               0.48            0.5%
-           2,500            225               0.56            3.3%
-           2,500            300               0.63            6.8%
-           5,000             75               0.22           27.9%
-           5,000            150               0.33            9.4%
-           5,000            225               0.42            1.6%
-           5,000            300               0.48            0.5%
-           7,500             75                0.2           39.6%
-           7,500            150               0.28           20.0%
-           7,500            225               0.33            9.4%
-           7,500            300               0.42            2.8%
-          10,000             75               0.16           47.1%
-          10,000            150               0.22           27.9%
-          10,000            225               0.28           16.9%
-          10,000            300               0.33            9.4%
+           2,500             75               0.34            8.8%
+           2,500            150               0.55            1.2%
+           2,500            225               0.58            4.5%
+           2,500            300               0.68            8.1%
+           5,000             75               0.23           27.0%
+           5,000            150               0.34            8.8%
+           5,000            225               0.38            1.5%
+           5,000            300               0.55            1.2%
+           7,500             75               0.18           39.1%
+           7,500            150               0.28           19.1%
+           7,500            225               0.34            8.8%
+           7,500            300               0.38            3.6%
+          10,000             75               0.13           47.4%
+          10,000            150               0.23           27.0%
+          10,000            225               0.28           15.9%
+          10,000            300               0.34            8.8%
 
-Optimal threshold ranges from 0.16 to 0.63 across this grid (vs. the single default-assumption threshold).
+Optimal threshold ranges from 0.13 to 0.68 across this grid (vs. the single default-assumption threshold).
