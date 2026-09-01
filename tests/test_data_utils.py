@@ -8,6 +8,7 @@ from data_utils import (
     time_based_split,
     TARGET_COL,
 )
+from graph_features import add_causal_device_graph_features, build_device_fingerprint
 
 
 class TestBuildEntityId:
@@ -123,6 +124,97 @@ class TestAddCausalEntityHistory:
         assert second_b["entity_prior_fraud_count"] == 0
 
 
+class TestBuildDeviceFingerprint:
+    def test_uses_device_info_when_present(self):
+        df = pd.DataFrame({"DeviceInfo": ["iPhone"], "addr1": [100], "addr2": [10]})
+        assert build_device_fingerprint(df).iloc[0] == "iPhone"
+
+    def test_falls_back_to_address_when_device_info_missing(self):
+        df = pd.DataFrame({"DeviceInfo": [None], "addr1": [100], "addr2": [10]})
+        assert build_device_fingerprint(df).iloc[0] == "ADDR_100_10"
+
+    def test_no_fingerprint_when_neither_is_available(self):
+        df = pd.DataFrame({"DeviceInfo": [None], "addr1": [None], "addr2": [None]})
+        assert pd.isna(build_device_fingerprint(df).iloc[0])
+
+    def test_missing_columns_degrade_to_no_fingerprint_rather_than_crash(self):
+        # A DataFrame that never merged in the identity table (or a
+        # minimal test fixture) shouldn't KeyError.
+        df = pd.DataFrame({"TransactionDT": [100]})
+        assert pd.isna(build_device_fingerprint(df).iloc[0])
+
+
+class TestAddCausalDeviceGraphFeatures:
+    """
+    Hand-built timeline, mirroring TestAddCausalEntityHistory's style but
+    for the DEVICE/ADDRESS graph signal — the point of this feature is
+    that it works across DIFFERENT entities sharing a device, which
+    per-entity history (entity_prior_*) can never see:
+
+      device D1: t=100 entity A (fraud=1), t=200 entity B (fraud=0),
+                 t=300 entity A again (fraud=0)
+      device D2: t=150 entity C (fraud=0) — a totally separate device
+
+    Every shared_device_prior_* value must be computed using only
+    transactions strictly earlier in time sharing that same fingerprint —
+    across entities, not just the current one.
+    """
+
+    def _timeline(self) -> pd.DataFrame:
+        return pd.DataFrame({
+            "entity_id": ["A", "B", "C", "A"],
+            "TransactionDT": [100, 200, 150, 300],
+            "DeviceInfo": ["D1", "D1", "D2", "D1"],
+            "addr1": [1, 1, 2, 1],
+            "addr2": [1, 1, 2, 1],
+            TARGET_COL: [1, 0, 0, 0],
+        })
+
+    def test_first_transaction_on_a_device_has_no_prior_entities_or_fraud(self):
+        result = add_causal_device_graph_features(self._timeline())
+        first_a = result[(result["entity_id"] == "A") & (result["TransactionDT"] == 100)].iloc[0]
+
+        assert first_a["shared_device_prior_entity_count"] == 0
+        assert first_a["shared_device_prior_fraud_rate"] == 0.0
+
+    def test_a_different_entity_on_the_same_device_sees_the_first_entitys_history(self):
+        # This is the whole point of the feature: entity B has NO history
+        # of its own (entity_prior_txn_count would be 0), but it shares
+        # device D1 with entity A, whose one prior transaction was fraud.
+        result = add_causal_device_graph_features(self._timeline())
+        b_row = result[result["entity_id"] == "B"].iloc[0]
+
+        assert b_row["shared_device_prior_entity_count"] == 1  # just A so far
+        assert b_row["shared_device_prior_fraud_rate"] == 1.0  # A's one prior txn was fraud
+
+    def test_distinct_entity_count_does_not_double_count_a_repeat_entity(self):
+        # By t=300, device D1 has been used by A (t100) and B (t200) — 2
+        # distinct entities — even though A itself has now shown up twice.
+        result = add_causal_device_graph_features(self._timeline())
+        second_a = result[(result["entity_id"] == "A") & (result["TransactionDT"] == 300)].iloc[0]
+
+        assert second_a["shared_device_prior_entity_count"] == 2
+        assert second_a["shared_device_prior_fraud_rate"] == 0.5  # 1 fraud out of 2 prior txns on D1
+
+    def test_different_devices_do_not_leak_into_each_other(self):
+        result = add_causal_device_graph_features(self._timeline())
+        c_row = result[result["entity_id"] == "C"].iloc[0]
+
+        # C is on device D2, entirely separate from D1's history.
+        assert c_row["shared_device_prior_entity_count"] == 0
+        assert c_row["shared_device_prior_fraud_rate"] == 0.0
+
+    def test_rows_with_no_fingerprint_get_zero_not_a_fabricated_link(self):
+        df = self._timeline()
+        df["DeviceInfo"] = None
+        df["addr1"] = np.nan
+        df["addr2"] = np.nan
+        result = add_causal_device_graph_features(df)
+
+        assert (result["shared_device_prior_entity_count"] == 0).all()
+        assert (result["shared_device_prior_fraud_rate"] == 0.0).all()
+
+
 class TestEngineerFeatures:
     def _raw_df(self):
         return pd.DataFrame({
@@ -164,6 +256,16 @@ class TestEngineerFeatures:
         result = engineer_features(self._raw_df())
         first_of_repeat_entity = result[result["entity_id"] == "100_10.0_1_300_gmail.com"].sort_values("TransactionDT").iloc[0]
         assert first_of_repeat_entity["entity_prior_txn_count"] == 0
+
+    def test_also_wires_in_the_device_graph_features(self):
+        # engineer_features delegates to add_causal_device_graph_features —
+        # this fixture has no DeviceInfo/addr2 columns at all, so this also
+        # confirms that degrades to 0 rather than crashing (the leakage
+        # math itself is covered in TestAddCausalDeviceGraphFeatures above).
+        result = engineer_features(self._raw_df())
+        assert "shared_device_prior_entity_count" in result.columns
+        assert "shared_device_prior_fraud_rate" in result.columns
+        assert (result["shared_device_prior_entity_count"] == 0).all()
 
 
 class TestTimeBasedSplit:

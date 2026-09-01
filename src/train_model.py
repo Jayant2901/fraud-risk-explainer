@@ -25,9 +25,15 @@ CATEGORIES_PATH = "models/categorical_categories.joblib"
 REPORT_PATH = "models/eval_report.txt"
 
 
-def train():
-    df = load_raw_data()
-    df = engineer_features(df)
+def train(df=None):
+    """df: pass an already-loaded-and-engineered DataFrame to skip
+    re-running load_raw_data()/engineer_features() (used by
+    src/graph_features_ablation.py, which needs the same engineered
+    dataset for both the pre- and post-retrain comparison). Defaults to
+    loading it fresh, exactly as before."""
+    if df is None:
+        df = load_raw_data()
+        df = engineer_features(df)
 
     X_train, X_test, y_train, y_test, feature_cols = time_based_split(df)
     print(f"Train: {len(X_train):,} | Test: {len(X_test):,} | Features: {len(feature_cols)}")

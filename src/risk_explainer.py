@@ -37,6 +37,8 @@ FEATURE_LABELS = {
     "entity_prior_txn_count": "this entity's prior transaction count",
     "entity_prior_fraud_count": "this entity's prior flagged-fraud count",
     "entity_prior_fraud_rate": "this entity's historical fraud rate",
+    "shared_device_prior_entity_count": "distinct entities previously seen on this device/address",
+    "shared_device_prior_fraud_rate": "fraud rate previously seen on this device/address (any entity)",
 }
 
 

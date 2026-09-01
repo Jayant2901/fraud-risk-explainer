@@ -1,0 +1,14 @@
+Cold-start comparison: device/address graph features
+========================================================
+
+Cold-start subset: entity_prior_txn_count == 0 rows in the real chronological test set (10,292 rows, 291 fraud) -- transactions from an entity with no prior history of its own, which entity_prior_*
+features cannot see anything about by construction.
+
+Graph features present in the retrained feature set: yes
+
+                                    before       after
+Overall ROC-AUC                     0.9535      0.9540
+Cold-start recall                   0.8282      0.8385
+Cold-start precision                0.1388      0.1400
+
+Cold-start recall delta: +0.0103

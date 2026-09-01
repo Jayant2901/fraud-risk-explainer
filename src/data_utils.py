@@ -34,6 +34,8 @@ Key design decisions (documented here so the reasoning is traceable):
 import pandas as pd
 import numpy as np
 
+from graph_features import add_causal_device_graph_features, GRAPH_FEATURE_COLS
+
 TARGET_COL = "isFraud"
 TXN_PATH = "data/train_transaction.csv"
 IDENTITY_PATH = "data/train_identity.csv"
@@ -113,6 +115,9 @@ def engineer_features(df: pd.DataFrame) -> pd.DataFrame:
     df["entity_id"] = build_entity_id(df)
     df = add_causal_entity_history(df)
 
+    # --- Device/address graph signal (cold-start case — see graph_features.py) ---
+    df = add_causal_device_graph_features(df, target_col=TARGET_COL)
+
     # --- Time-of-day (TransactionDT is seconds from an arbitrary reference) ---
     seconds_in_day = 24 * 60 * 60
     df["hour_of_day"] = (df["TransactionDT"] % seconds_in_day) // 3600
@@ -133,7 +138,7 @@ def get_feature_columns(df: pd.DataFrame) -> list:
     engineered = [
         "hour_of_day", "is_night_txn", "amount_log",
         "entity_prior_txn_count", "entity_prior_fraud_count", "entity_prior_fraud_rate",
-    ]
+    ] + GRAPH_FEATURE_COLS
     v_cols = [c for c in V_COLS_KEEP if c in df.columns]
     feature_cols = NUMERIC_BASE_COLS + CATEGORICAL_COLS + v_cols + engineered
     return [c for c in feature_cols if c in df.columns]
