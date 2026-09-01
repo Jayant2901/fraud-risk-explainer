@@ -1,5 +1,6 @@
 import { useEffect, useState } from "react";
 import { api, type CostAnalysis as CostAnalysisData, type CostSensitivity, type DriftAnalysis } from "../api/client";
+import { focusRing, typeScale } from "../theme";
 
 const CHART_WIDTH = 480;
 const CHART_HEIGHT = 140;
@@ -78,8 +79,8 @@ export default function CostAnalysis() {
   return (
     <div className="space-y-6">
       <div>
-        <h2 className="text-lg font-semibold text-slate-100">Cost-Optimal Threshold Analysis</h2>
-        <p className="text-sm text-slate-400 mt-1">
+        <h2 className={typeScale.sectionTitle}>Cost-Optimal Threshold Analysis</h2>
+        <p className={`${typeScale.body} mt-1`}>
           Translates the model's threshold choice into business cost, instead of reporting accuracy
           alone. Assumptions are adjustable below.
         </p>
@@ -87,7 +88,7 @@ export default function CostAnalysis() {
 
       <div className="grid grid-cols-1 sm:grid-cols-2 gap-4 max-w-xl">
         <div>
-          <label htmlFor="avg-fraud-loss" className="block text-xs text-slate-400 mb-1">
+          <label htmlFor="avg-fraud-loss" className={`block ${typeScale.caption} mb-1`}>
             Assumed avg. fraud loss per missed fraud (₹)
           </label>
           <input
@@ -96,11 +97,11 @@ export default function CostAnalysis() {
             step={100}
             value={fraudLoss}
             onChange={(e) => setFraudLoss(Number(e.target.value))}
-            className="w-full bg-slate-800 border border-slate-700 rounded-md px-2 py-1.5 text-sm text-slate-100"
+            className={`w-full bg-neutral-900 border border-neutral-700 rounded-md px-2 py-1.5 text-sm text-neutral-100 ${focusRing}`}
           />
         </div>
         <div>
-          <label htmlFor="avg-fp-cost" className="block text-xs text-slate-400 mb-1">
+          <label htmlFor="avg-fp-cost" className={`block ${typeScale.caption} mb-1`}>
             Assumed cost per wrongly-flagged legit transaction (₹)
           </label>
           <input
@@ -109,7 +110,7 @@ export default function CostAnalysis() {
             step={10}
             value={fpCost}
             onChange={(e) => setFpCost(Number(e.target.value))}
-            className="w-full bg-slate-800 border border-slate-700 rounded-md px-2 py-1.5 text-sm text-slate-100"
+            className={`w-full bg-neutral-900 border border-neutral-700 rounded-md px-2 py-1.5 text-sm text-neutral-100 ${focusRing}`}
           />
         </div>
       </div>
@@ -118,11 +119,11 @@ export default function CostAnalysis() {
 
       {data && (
         data.eval_report ? (
-          <pre className="bg-slate-900/60 border border-slate-800 rounded-xl p-4 text-xs text-slate-300 overflow-x-auto whitespace-pre">
+          <pre className="border border-neutral-800 rounded-xl p-4 text-xs text-neutral-300 overflow-x-auto whitespace-pre">
             {data.eval_report}
           </pre>
         ) : (
-          <p className="text-sm text-amber-400 bg-amber-500/10 border border-amber-500/30 rounded-md px-3 py-2">
+          <p className="text-sm text-amber-300 bg-amber-500/10 border border-amber-500/30 rounded-md px-3 py-2">
             Run <code>python src/train_model.py</code> first to generate the eval report and cost
             curve.
           </p>
@@ -130,10 +131,10 @@ export default function CostAnalysis() {
       )}
 
       <div>
-        <h3 className="text-sm font-semibold text-slate-100">
+        <h3 className={typeScale.subTitle}>
           How sensitive is the optimal threshold to these assumptions?
         </h3>
-        <p className="text-xs text-slate-400 mt-1 max-w-2xl">
+        <p className={`${typeScale.caption} mt-1 max-w-2xl`}>
           The Rs {data?.defaults.avg_fraud_loss.toLocaleString() ?? "5,000"}/Rs{" "}
           {data?.defaults.avg_fp_cost.toLocaleString() ?? "150"} pair above is a single point
           estimate. This table sweeps both costs from 0.5x to 2x their defaults and shows the
@@ -144,33 +145,33 @@ export default function CostAnalysis() {
         {sensitivityError && <p className="text-sm text-red-400 mt-2">{sensitivityError}</p>}
 
         {sensitivityMessage && (
-          <p className="text-sm text-amber-400 bg-amber-500/10 border border-amber-500/30 rounded-md px-3 py-2 mt-2">
+          <p className="text-sm text-amber-300 bg-amber-500/10 border border-amber-500/30 rounded-md px-3 py-2 mt-2">
             {sensitivityMessage}
           </p>
         )}
 
         {sensitivity && (
           <div className="overflow-x-auto mt-3">
-            <table className="text-xs text-slate-300 border-collapse">
+            <table className="text-xs text-neutral-300 w-full">
               <thead>
-                <tr>
-                  <th className="border border-slate-700 bg-slate-800 px-3 py-1.5 text-left">
+                <tr className="border-b border-neutral-700">
+                  <th className="bg-neutral-900 px-3 py-1.5 text-left font-medium text-neutral-400">
                     fraud loss \ fp cost
                   </th>
                   {sensitivity.fp_cost_multipliers.map((fpMult) => (
                     <th
                       key={fpMult}
-                      className="border border-slate-700 bg-slate-800 px-3 py-1.5 text-right"
+                      className="bg-neutral-900 px-3 py-1.5 text-right font-medium text-neutral-400"
                     >
                       ₹{Math.round(sensitivity.base_fp_cost * fpMult).toLocaleString()}
                     </th>
                   ))}
                 </tr>
               </thead>
-              <tbody>
+              <tbody className="divide-y divide-neutral-800">
                 {sensitivity.fraud_loss_multipliers.map((flMult) => (
                   <tr key={flMult}>
-                    <th className="border border-slate-700 bg-slate-800 px-3 py-1.5 text-left font-normal">
+                    <th className="px-3 py-1.5 text-left font-normal text-neutral-400 bg-neutral-900">
                       ₹{Math.round(sensitivity.base_fraud_loss * flMult).toLocaleString()}
                     </th>
                     {sensitivity.fp_cost_multipliers.map((fpMult) => {
@@ -180,7 +181,7 @@ export default function CostAnalysis() {
                       return (
                         <td
                           key={fpMult}
-                          className="border border-slate-700 px-3 py-1.5 text-right tabular-nums"
+                          className="px-3 py-1.5 text-right tabular-nums"
                         >
                           {cell ? cell.optimal_threshold : "—"}
                         </td>
@@ -195,10 +196,10 @@ export default function CostAnalysis() {
       </div>
 
       <div>
-        <h3 className="text-sm font-semibold text-slate-100">
+        <h3 className={typeScale.subTitle}>
           Does the model still perform well later in the test window?
         </h3>
-        <p className="text-xs text-slate-400 mt-1 max-w-2xl">
+        <p className={`${typeScale.caption} mt-1 max-w-2xl`}>
           A single AUC number from one split quietly assumes the model stays good forever. This
           buckets the same real test set by time and scores the already-trained model in each
           bucket separately — no retraining per bucket — to check for drift.
@@ -207,7 +208,7 @@ export default function CostAnalysis() {
         {driftError && <p className="text-sm text-red-400 mt-2">{driftError}</p>}
 
         {driftMessage && (
-          <p className="text-sm text-amber-400 bg-amber-500/10 border border-amber-500/30 rounded-md px-3 py-2 mt-2">
+          <p className="text-sm text-amber-300 bg-amber-500/10 border border-amber-500/30 rounded-md px-3 py-2 mt-2">
             {driftMessage}
           </p>
         )}
@@ -216,7 +217,7 @@ export default function CostAnalysis() {
           const points = aucChartPoints(drift.buckets);
           const aucs = points.map((p) => p.rocAuc);
           return (
-            <div className="mt-3 bg-slate-900/60 border border-slate-800 rounded-xl p-4">
+            <div className="mt-3 border border-neutral-800 rounded-xl p-4">
               <svg
                 viewBox={`0 0 ${CHART_WIDTH} ${CHART_HEIGHT}`}
                 className="w-full max-w-lg"
@@ -239,7 +240,7 @@ export default function CostAnalysis() {
                 ))}
               </svg>
               {aucs.length > 0 && (
-                <p className="text-xs text-slate-500 mt-2">
+                <p className={`${typeScale.caption} mt-2`}>
                   {drift.buckets.length} buckets over a {(drift.span_seconds / 86400).toFixed(1)}-day test
                   window. ROC-AUC ranges from {Math.min(...aucs).toFixed(4)} to {Math.max(...aucs).toFixed(4)}{" "}
                   across buckets.

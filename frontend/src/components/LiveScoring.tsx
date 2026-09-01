@@ -1,22 +1,24 @@
 import { useEffect, useMemo, useState } from "react";
 import { api, type EscalationState, type ExplanationResult, type ScoreResult, type TxnSummary } from "../api/client";
-
-const STATE_DISPLAY: Record<string, { label: string; color: string }> = {
-  NORMAL: { label: "🟢 NORMAL", color: "text-emerald-400" },
-  WATCH: { label: "🟡 WATCH", color: "text-amber-400" },
-  ELEVATED: { label: "🔴 ELEVATED", color: "text-red-400" },
-};
-
-const ACTION_STYLE: Record<string, string> = {
-  ALLOW: "bg-emerald-500/15 border-emerald-500/40 text-emerald-300",
-  REVIEW: "bg-amber-500/15 border-amber-500/40 text-amber-300",
-  BLOCK: "bg-red-500/15 border-red-500/40 text-red-300",
-};
+import { AlertTriangleIcon } from "./icons";
+import {
+  accentBg,
+  accentBorder,
+  accentText,
+  actionStatus,
+  buttonBase,
+  escalationStatus,
+  focusRing,
+  statusBadgeClass,
+  statusDotClass,
+  statusTextClass,
+  typeScale,
+} from "../theme";
 
 function riskBand(score: number) {
-  if (score >= 80) return { label: "HIGH RISK (model)", cls: "bg-red-500/15 border-red-500/40 text-red-300" };
-  if (score >= 40) return { label: "MEDIUM RISK (model)", cls: "bg-amber-500/15 border-amber-500/40 text-amber-300" };
-  return { label: "LOW RISK (model)", cls: "bg-emerald-500/15 border-emerald-500/40 text-emerald-300" };
+  if (score >= 80) return { label: "HIGH RISK (model)", status: "danger" as const };
+  if (score >= 40) return { label: "MEDIUM RISK (model)", status: "warning" as const };
+  return { label: "LOW RISK (model)", status: "success" as const };
 }
 
 export default function LiveScoring() {
@@ -116,20 +118,20 @@ export default function LiveScoring() {
     }
   }
 
-  const stateInfo = escalation ? STATE_DISPLAY[escalation.state] ?? { label: escalation.state, color: "text-slate-300" } : null;
+  const escStatus = escalation ? escalationStatus[escalation.state] : null;
 
   return (
     <div className="grid grid-cols-1 lg:grid-cols-[280px_1fr] gap-6">
-      <aside className="bg-slate-900/60 border border-slate-800 rounded-xl p-4 h-fit space-y-4">
-        <h2 className="text-sm font-semibold text-slate-300 uppercase tracking-wide">Entity Session</h2>
+      <aside className="space-y-4">
+        <h2 className={`${typeScale.subTitle} uppercase tracking-wide text-neutral-400`}>Entity Session</h2>
 
         <div>
-          <label htmlFor="entity-select" className="block text-xs text-slate-400 mb-1">
+          <label htmlFor="entity-select" className={`block ${typeScale.caption} mb-1`}>
             Entity (card/account fingerprint)
           </label>
           <select
             id="entity-select"
-            className="w-full bg-slate-800 border border-slate-700 rounded-md px-2 py-1.5 text-sm text-slate-100 disabled:opacity-50"
+            className={`w-full bg-neutral-900 border border-neutral-700 rounded-md px-2 py-1.5 text-sm text-neutral-100 disabled:opacity-50 ${focusRing}`}
             value={selectedEntity}
             disabled={loadingEntities}
             onChange={(e) => setSelectedEntity(e.target.value)}
@@ -142,12 +144,12 @@ export default function LiveScoring() {
           </select>
         </div>
 
-        <p className="text-xs text-slate-500">
+        <p className={typeScale.caption}>
           {loadingTxns ? "Loading..." : `${txns.length} transactions in this entity's sequence`}
         </p>
 
         <div>
-          <label htmlFor="txn-index-slider" className="block text-xs text-slate-400 mb-1">
+          <label htmlFor="txn-index-slider" className={`block ${typeScale.caption} mb-1`}>
             Transaction # in sequence: {txnIdx}
           </label>
           <input
@@ -158,10 +160,10 @@ export default function LiveScoring() {
             value={txnIdx}
             onChange={(e) => setTxnIdx(Number(e.target.value))}
             disabled={!txns.length}
-            className="w-full"
+            className={`w-full accent-indigo-500 ${focusRing}`}
           />
           {currentTxn && (
-            <p className="text-xs text-slate-500 mt-1">
+            <p className={`${typeScale.caption} mt-1`}>
               ₹{currentTxn.TransactionAmt.toFixed(2)} · {currentTxn.ProductCD}
             </p>
           )}
@@ -169,7 +171,7 @@ export default function LiveScoring() {
 
         <button
           onClick={handleReset}
-          className="w-full text-sm px-3 py-1.5 rounded-md border border-slate-700 text-slate-300 hover:bg-slate-800 transition"
+          className={`w-full text-sm px-3 py-1.5 rounded-md border border-neutral-700 text-neutral-300 hover:bg-neutral-900 hover:border-neutral-600 ${buttonBase}`}
         >
           Reset entity memory
         </button>
@@ -177,7 +179,7 @@ export default function LiveScoring() {
         <button
           onClick={handleScore}
           disabled={!txns.length || scoring}
-          className="w-full text-sm font-medium px-3 py-2 rounded-md bg-indigo-500 hover:bg-indigo-400 disabled:opacity-50 disabled:cursor-not-allowed text-white transition"
+          className={`w-full text-sm font-medium px-3 py-2 rounded-md bg-indigo-500 hover:bg-indigo-400 text-white ${buttonBase}`}
         >
           {scoring ? "Scoring..." : "Score this transaction"}
         </button>
@@ -187,43 +189,55 @@ export default function LiveScoring() {
 
       <section>
         {!result ? (
-          <div className="bg-slate-900/40 border border-dashed border-slate-700 rounded-xl p-6 text-slate-400 text-sm">
+          <div className="border border-dashed border-neutral-700 rounded-xl p-6 text-neutral-400 text-sm">
             Pick an entity and transaction number in the sidebar, then click{" "}
-            <span className="text-slate-200 font-medium">Score this transaction</span>. Score several
+            <span className="text-neutral-200 font-medium">Score this transaction</span>. Score several
             transactions from the same entity in sequence to see the escalation state build up.
           </div>
         ) : (
           <div className="grid grid-cols-1 md:grid-cols-[1fr_2fr] gap-6">
             <div className="space-y-5">
-              <div className="bg-slate-900/60 border border-slate-800 rounded-xl p-4">
-                <p className="text-xs text-slate-400 uppercase tracking-wide mb-1">Risk Score</p>
-                <p className="text-3xl font-semibold text-slate-100">{result.risk_score} / 100</p>
-                <div className={`mt-3 border rounded-md px-3 py-1.5 text-sm font-medium ${riskBand(result.risk_score).cls}`}>
+              {/* Primary result — the one thing on this page that most needs
+                  visual weight, so it gets a filled card instead of the
+                  plain-outline treatment everything else uses. */}
+              <div className="bg-neutral-900 border border-neutral-800 rounded-xl p-5">
+                <p className={typeScale.caption}>Risk Score</p>
+                <p className="text-4xl font-bold text-neutral-50 mt-1 tabular-nums">
+                  {result.risk_score}
+                  <span className="text-lg font-normal text-neutral-500"> / 100</span>
+                </p>
+                <div className={`mt-3 ${statusBadgeClass(riskBand(result.risk_score).status)}`}>
+                  <span className={statusDotClass(riskBand(result.risk_score).status)} />
                   {riskBand(result.risk_score).label}
                 </div>
               </div>
 
-              <div className="bg-slate-900/60 border border-slate-800 rounded-xl p-4">
-                <h3 className="text-sm font-semibold text-slate-300 mb-2">Entity Escalation State</h3>
-                <p className={`text-sm font-medium ${stateInfo?.color}`}>{stateInfo?.label}</p>
-                <p className="text-xs text-slate-500 mt-1">
+              <div>
+                <h3 className={typeScale.subTitle}>Entity Escalation State</h3>
+                {escStatus && (
+                  <p className={`text-sm font-medium mt-1.5 flex items-center gap-1.5 ${statusTextClass(escStatus)}`}>
+                    <span className={statusDotClass(escStatus)} />
+                    {escalation?.state}
+                  </p>
+                )}
+                <p className={`${typeScale.caption} mt-1`}>
                   {result.escalation_before.recent_risky_count} risky verdicts in last{" "}
                   {result.escalation_before.recent_verdict_count} transactions for this entity
                 </p>
                 {result.escalation_before.recent_verdicts.length > 0 && (
-                  <p className="text-xs text-slate-400 mt-2">
+                  <p className={`${typeScale.caption} mt-2`}>
                     Recent verdicts: {result.escalation_before.recent_verdicts.join(" → ")}
                   </p>
                 )}
               </div>
 
-              <div className="bg-slate-900/60 border border-slate-800 rounded-xl p-4">
-                <h3 className="text-sm font-semibold text-slate-300 mb-2">Top Contributing Factors</h3>
-                <ul className="space-y-1.5 text-sm text-slate-300">
+              <div>
+                <h3 className={typeScale.subTitle}>Top Contributing Factors</h3>
+                <ul className="space-y-1.5 text-sm text-neutral-300 mt-1.5">
                   {result.top_factors.map((f) => (
                     <li key={f.feature}>
-                      <span className="font-medium text-slate-100">{f.label}</span>: {f.value}{" "}
-                      <span className="text-slate-500">
+                      <span className="font-medium text-neutral-100">{f.label}</span>: {f.value}{" "}
+                      <span className="text-neutral-500">
                         (impact: {f.contribution >= 0 ? "+" : ""}
                         {f.contribution.toFixed(3)})
                       </span>
@@ -233,36 +247,41 @@ export default function LiveScoring() {
               </div>
             </div>
 
-            <div className="bg-slate-900/60 border border-slate-800 rounded-xl p-4 space-y-3">
-              <h3 className="text-sm font-semibold text-slate-300">Automated Decision</h3>
-              <div className={`border rounded-md px-3 py-2 text-sm font-medium ${ACTION_STYLE[result.decision.action] ?? ""}`}>
-                Action: <span className="font-semibold">{result.decision.action}</span>
+            <div className="bg-neutral-900 border border-neutral-800 rounded-xl p-5 space-y-3">
+              <h3 className={typeScale.subTitle}>Automated Decision</h3>
+              <div className={statusBadgeClass(actionStatus[result.decision.action])}>
+                <span className={statusDotClass(actionStatus[result.decision.action])} />
+                <span className="font-semibold">{result.decision.action}</span>
               </div>
               {result.decision.escalated_due_to_history && (
-                <div className="border border-indigo-500/40 bg-indigo-500/10 text-indigo-300 rounded-md px-3 py-2 text-sm">
-                  ⚠️ Action escalated due to this entity's recent risk trajectory.
+                <div className={`border ${accentBorder} ${accentBg} ${accentText} rounded-md px-3 py-2 text-sm flex items-start gap-2`}>
+                  <AlertTriangleIcon className="h-4 w-4 mt-0.5 shrink-0" />
+                  <span>Action escalated due to this entity's recent risk trajectory.</span>
                 </div>
               )}
-              <p className="text-xs text-slate-500">
+              <p className={typeScale.caption}>
                 Decided synchronously from the score and rules — this is what actually gated the
                 transaction, before any LLM call.
               </p>
 
-              <div className="pt-2 border-t border-slate-800">
-                <h4 className="text-sm font-semibold text-slate-300 mb-2">AI Reviewer Explanation</h4>
+              <div className="pt-3 border-t border-neutral-800">
+                <h4 className={typeScale.subTitle}>AI Reviewer Explanation</h4>
                 {!explanation || explanation.status === "pending" ? (
-                  <p className="text-sm text-slate-500 italic">Generating explanation…</p>
+                  <p className="text-sm text-neutral-500 italic mt-1.5">Generating explanation…</p>
                 ) : (
-                  <div className="space-y-2">
+                  <div className="space-y-2 mt-1.5">
                     {explanation.verdict.action !== result.decision.action && (
-                      <div className="border border-amber-500/40 bg-amber-500/10 text-amber-300 rounded-md px-3 py-2 text-xs">
-                        Note: the AI reviewer's suggested action ({explanation.verdict.action}) differs
-                        from the automated decision above — the automated decision is authoritative
-                        and already final; this is reviewer context only.
+                      <div className="border border-amber-500/30 bg-amber-500/10 text-amber-300 rounded-md px-3 py-2 text-xs flex items-start gap-2">
+                        <AlertTriangleIcon className="h-3.5 w-3.5 mt-0.5 shrink-0" />
+                        <span>
+                          Note: the AI reviewer's suggested action ({explanation.verdict.action}) differs
+                          from the automated decision above — the automated decision is authoritative
+                          and already final; this is reviewer context only.
+                        </span>
                       </div>
                     )}
-                    <p className="text-sm text-slate-200">{explanation.verdict.explanation}</p>
-                    <p className="text-xs text-slate-500">Rationale: {explanation.verdict.rationale}</p>
+                    <p className="text-sm text-neutral-200">{explanation.verdict.explanation}</p>
+                    <p className={typeScale.caption}>Rationale: {explanation.verdict.rationale}</p>
                   </div>
                 )}
               </div>
