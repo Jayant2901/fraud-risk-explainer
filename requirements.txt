@@ -18,4 +18,8 @@ slowapi==0.1.10
 # but the client library itself is a hard dependency either way.
 redis==8.1.0
 
+# Observability: JSON logging (stdlib logging.Formatter, no extra
+# dependency) + /metrics (Prometheus text format)
+prometheus-fastapi-instrumentator==8.1.0
+
 # requirements-dev.txt has test-only dependencies (pytest, fakeredis, ...)

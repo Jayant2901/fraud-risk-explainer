@@ -292,6 +292,22 @@ use `fakeredis` for the Redis-backed paths).
 - `test_llm_agent.py` — prompt-injection sanitization and every Gemini
   failure path (missing/invalid key, rate limiting, server errors,
   malformed schema) against a mocked client.
+- `test_logging_utils.py` — the JSON log formatter's output shape, the
+  request-id filter/middleware (including that it survives into the
+  `/api/score` background task, not just the request handler), and that
+  `/metrics` is reachable and looks like Prometheus text format.
+
+**Frontend** (component smoke tests, Vitest + React Testing Library):
+
+```bash
+cd frontend
+npm run test
+```
+
+`LiveScoring.test.tsx` and `CostAnalysis.test.tsx` mock `api/client.ts`
+entirely — no backend needed. Cover: the entity dropdown/numeric inputs
+render from mocked API responses, inputs trigger a re-fetch, and API
+errors surface as visible error text.
 
 ## Project structure
 
@@ -309,7 +325,8 @@ risk-manager/
 │   ├── redis_utils.py           <- optional-Redis client factory + KeyedCache (idempotency/explanations)
 │   └── llm_agent.py             <- Gemini (Google Gen AI API) agent, reasons over score + history
 ├── api/
-│   └── main.py                  <- FastAPI JSON API wrapping the src/ modules
+│   ├── main.py                  <- FastAPI JSON API wrapping the src/ modules
+│   └── logging_utils.py         <- JSON log formatter + request-id middleware
 ├── tests/
 │   ├── conftest.py               <- shared fixtures: fake data/model/agent, FastAPI TestClient
 │   ├── test_entity_memory.py     <- parametrized: in-process AND Redis (fakeredis)
@@ -320,6 +337,7 @@ risk-manager/
 │   ├── test_api.py               <- routes, idempotency, decide_action
 │   ├── test_api_auth.py          <- API_KEY auth, fail-closed behavior
 │   ├── test_rate_limit.py        <- 30/minute on /api/score
+│   ├── test_logging_utils.py     <- JSON formatter, request-id propagation, /metrics
 │   └── test_llm_agent.py         <- mocked Gemini client
 ├── requirements.txt              <- pinned, runtime only
 ├── requirements-dev.txt          <- + pytest/fakeredis/etc, includes requirements.txt
@@ -330,13 +348,127 @@ risk-manager/
 └── frontend/                    <- React + TypeScript + Tailwind SPA
     ├── Dockerfile                <- multi-stage: node build -> nginx
     ├── nginx.conf                <- serves the SPA, proxies /api/* to the backend container
+    ├── vitest.config.ts
     └── src/
         ├── api/client.ts        <- typed fetch client for the backend
         ├── components/
-        │   ├── LiveScoring.tsx
-        │   └── CostAnalysis.tsx
+        │   ├── LiveScoring.tsx (+ .test.tsx)
+        │   └── CostAnalysis.tsx (+ .test.tsx)
+        ├── test/setup.ts
         └── App.tsx
 ```
+
+## Architecture
+
+```mermaid
+flowchart TD
+    FE["React SPA"]
+
+    subgraph API["FastAPI — api/main.py"]
+        AUTH["verify_api_key<br/>+ slowapi rate limiter"]
+        SCORE["POST /api/score"]
+        DECIDE["decide_action()<br/>XGBoost predict + SHAP + rules<br/>~100-130ms measured locally"]
+        EXPL["GET /api/explanations/id"]
+        BG["background task<br/>_generate_explanation()"]
+    end
+
+    GEMINI[("Gemini API<br/>structured output")]
+
+    subgraph STATE["entity memory / idempotency cache / explanation cache"]
+        direction LR
+        INPROC["in-process (default)"]
+        REDIS[("Redis<br/>REDIS_URL set")]
+    end
+
+    FE -- "1. POST, X-API-Key + Idempotency-Key" --> AUTH
+    AUTH --> SCORE
+    SCORE --> DECIDE
+    DECIDE -- "2. ALLOW / REVIEW / BLOCK<br/>returned immediately" --> FE
+    DECIDE -- "records verdict" --> STATE
+    SCORE -. "3. schedules only<br/>does not block the response" .-> BG
+    BG -- "4. request" --> GEMINI
+    GEMINI -- "5. explanation" --> BG
+    BG -- "6. writes verdict" --> STATE
+    FE -- "7. polls ~1/sec" --> EXPL
+    EXPL --> STATE
+```
+
+Two paths, and the whole point of the design is that they don't block
+each other:
+
+- **Synchronous (steps 1-2):** the ALLOW/REVIEW/BLOCK decision that
+  actually gates the transaction — score, SHAP, `decide_action()` — all
+  inside the request/response cycle, in ~100-130ms. This is what a
+  real-time authorization path can rely on.
+- **Asynchronous (steps 3-7):** the human-readable explanation. Scheduled
+  as a background task *after* the response has already gone out; the
+  frontend polls for it separately. A slow or down Gemini API delays the
+  explanation panel, never the decision.
+
+`STATE` — entity escalation history, the idempotency cache, and the
+explanation cache — is in-process by default and optionally Redis-backed
+(`REDIS_URL`); see point 6 in the section above and `src/entity_memory.py`
+/ `src/redis_utils.py`.
+
+## Authentication
+
+Every `/api/*` route except `/api/health` (and `/metrics`, see
+[Observability](#observability) below) requires an `X-API-Key` header
+matching the server's `API_KEY` environment variable.
+
+```bash
+curl http://localhost:8000/api/entities \
+  -H "X-API-Key: your-api-key-here"
+```
+
+- **No key configured on the server → every protected request gets
+  401**, regardless of what header is sent. There's no fallback or
+  auto-generated default — see `verify_api_key` in `api/main.py`.
+- **Missing or wrong key → 401** with a JSON `{"detail": "..."}` body
+  explaining which of the two happened.
+- Generate a key yourself; it's an opaque shared secret, not a signed
+  token:
+  ```bash
+  python -c "import secrets; print(secrets.token_urlsafe(32))"
+  ```
+- The frontend sends this automatically once `frontend/.env`'s
+  `VITE_API_KEY` matches the backend's `API_KEY` — see Setup step 5.
+
+## Rate limiting
+
+`POST /api/score` — the endpoint that runs the ML model — is limited to
+**30 requests/minute per caller**, identified by `X-API-Key` when
+present (so all traffic under one key shares one budget) or by source IP
+otherwise. Every other route (`/api/entities`, `/api/cost-analysis`,
+etc.) is unaffected.
+
+Exceeding the limit returns `429 Too Many Requests` with:
+
+```json
+{"error": "Rate limit exceeded: 30 per 1 minute"}
+```
+
+Backed by the same optional Redis as entity memory (`storage_uri` on the
+`slowapi.Limiter` in `api/main.py`) — in-process by default, so the
+budget is per-process unless `REDIS_URL` is set, in which case it's
+shared across restarts/workers too.
+
+## Observability
+
+- **Structured logs:** every log line the app emits is JSON (see
+  `api/logging_utils.py`) — `timestamp`, `level`, `logger`, `message`,
+  plus a `request_id` that's the same for a request's route handler and
+  its `/api/score` background task (propagated via `contextvars`, not
+  threaded through function signatures), so you can grep one request's
+  full story out of the log stream. The same id comes back as an
+  `X-Request-ID` response header for client-side correlation. This only
+  reconfigures the *root* logger — uvicorn's own access/error logs are
+  untouched.
+- **Metrics:** `GET /metrics` (Prometheus text format, via
+  `prometheus-fastapi-instrumentator`) — request count and latency per
+  route. Deliberately not behind `verify_api_key`: Prometheus scraping
+  conventions assume network-level access control, not an application
+  key, and it's operational data, not customer data.
 
 ## Methodology notes (for the writeup / judges)
 

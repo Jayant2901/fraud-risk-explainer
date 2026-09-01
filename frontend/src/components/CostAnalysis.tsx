@@ -26,10 +26,11 @@ export default function CostAnalysis() {
 
       <div className="grid grid-cols-1 sm:grid-cols-2 gap-4 max-w-xl">
         <div>
-          <label className="block text-xs text-slate-400 mb-1">
+          <label htmlFor="avg-fraud-loss" className="block text-xs text-slate-400 mb-1">
             Assumed avg. fraud loss per missed fraud (₹)
           </label>
           <input
+            id="avg-fraud-loss"
             type="number"
             step={100}
             value={fraudLoss}
@@ -38,10 +39,11 @@ export default function CostAnalysis() {
           />
         </div>
         <div>
-          <label className="block text-xs text-slate-400 mb-1">
+          <label htmlFor="avg-fp-cost" className="block text-xs text-slate-400 mb-1">
             Assumed cost per wrongly-flagged legit transaction (₹)
           </label>
           <input
+            id="avg-fp-cost"
             type="number"
             step={10}
             value={fpCost}

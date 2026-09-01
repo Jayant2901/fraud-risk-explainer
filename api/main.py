@@ -30,6 +30,7 @@ import sys
 import uuid
 
 sys.path.append(os.path.join(os.path.dirname(__file__), "..", "src"))
+sys.path.append(os.path.dirname(__file__))
 
 from functools import lru_cache
 
@@ -38,12 +39,14 @@ from fastapi import BackgroundTasks, Depends, FastAPI, Header, HTTPException, Re
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.routing import APIRouter
 from fastapi.security import APIKeyHeader
+from prometheus_fastapi_instrumentator import Instrumentator
 from pydantic import BaseModel
 from slowapi import Limiter, _rate_limit_exceeded_handler
 from slowapi.errors import RateLimitExceeded
 from slowapi.middleware import SlowAPIMiddleware
 from slowapi.util import get_remote_address
 
+from logging_utils import configure_logging, RequestIDMiddleware
 from risk_explainer import RiskExplainer
 from llm_agent import RiskExplainerAgent
 from entity_memory import create_entity_memory
@@ -51,6 +54,7 @@ from redis_utils import get_redis_client, KeyedCache
 from data_utils import load_raw_data, engineer_features
 from cost_analysis import cost_curve, DEFAULT_AVG_FRAUD_LOSS, DEFAULT_AVG_FP_COST
 
+configure_logging()
 logger = logging.getLogger(__name__)
 
 app = FastAPI(title="AI Risk Manager API")
@@ -61,6 +65,17 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+# Outermost middleware, so every request — including ones that never
+# reach a route (rate-limited, auth-rejected) — gets a request id logs
+# can be correlated by. See logging_utils.py.
+app.add_middleware(RequestIDMiddleware)
+
+# /metrics (Prometheus text format): request count/latency per route,
+# unauthenticated by design — Prometheus scraping conventions expect
+# network-level access control (e.g. not publicly exposed), not an
+# application API key, and it's operational data, not customer data.
+Instrumentator().instrument(app).expose(app, endpoint="/metrics", include_in_schema=False)
 
 
 def _rate_limit_key(request: Request) -> str:
@@ -181,7 +196,7 @@ def _generate_explanation(verdict_id: str, risk_score: float, top_factors: list,
         agent = get_agent()
         verdict = agent.explain(risk_score, top_factors, escalation)
     except Exception:
-        logger.exception("Unhandled error generating explanation for verdict_id=%s", verdict_id)
+        logger.exception("Unhandled error generating explanation", extra={"verdict_id": verdict_id})
         verdict = {
             "explanation": "An unexpected error occurred while generating the AI explanation.",
             "action": "REVIEW",

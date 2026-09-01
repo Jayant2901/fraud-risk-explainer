@@ -124,8 +124,11 @@ export default function LiveScoring() {
         <h2 className="text-sm font-semibold text-slate-300 uppercase tracking-wide">Entity Session</h2>
 
         <div>
-          <label className="block text-xs text-slate-400 mb-1">Entity (card/account fingerprint)</label>
+          <label htmlFor="entity-select" className="block text-xs text-slate-400 mb-1">
+            Entity (card/account fingerprint)
+          </label>
           <select
+            id="entity-select"
             className="w-full bg-slate-800 border border-slate-700 rounded-md px-2 py-1.5 text-sm text-slate-100 disabled:opacity-50"
             value={selectedEntity}
             disabled={loadingEntities}
@@ -144,10 +147,11 @@ export default function LiveScoring() {
         </p>
 
         <div>
-          <label className="block text-xs text-slate-400 mb-1">
+          <label htmlFor="txn-index-slider" className="block text-xs text-slate-400 mb-1">
             Transaction # in sequence: {txnIdx}
           </label>
           <input
+            id="txn-index-slider"
             type="range"
             min={0}
             max={Math.max(txns.length - 1, 0)}
