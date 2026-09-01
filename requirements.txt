@@ -10,6 +10,9 @@ google-genai==2.20.0
 pydantic==2.13.5
 joblib==1.5.3
 
+# Lets `uvicorn --env-file .env` load API_KEY/GEMINI_API_KEY automatically
+python-dotenv==1.0.1
+
 # Rate limiting (POST /api/score)
 slowapi==0.1.10
 
