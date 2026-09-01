@@ -106,7 +106,11 @@ This places `train_transaction.csv` and `train_identity.csv` in `data/`.
 ### 2. Set your Gemini API key (free)
 
 ```bash
-export GEMINI_API_KEY=...
+export GEMINI_API_KEY=...          # macOS/Linux
+```
+```powershell
+$env:GEMINI_API_KEY = "..."        # Windows PowerShell, current session
+setx GEMINI_API_KEY "..."          # Windows PowerShell, permanent (needs a new terminal to take effect)
 ```
 
 Get a free key from [aistudio.google.com/apikey](https://aistudio.google.com/apikey)
@@ -135,6 +139,17 @@ uvicorn api.main:app --reload --port 8000
 This serves the scoring/explanation/cost-analysis logic as a JSON API
 at `http://localhost:8000/api/...`.
 
+**First run is slow, and that's expected:** importing pandas/xgboost/shap
+takes ~20-30s before the server is even listening, and the very first
+`/api/entities` request loads and feature-engineers the full ~590K-row
+CSV (a couple of minutes) before caching the small sample it actually
+serves to `models/sample_data_cache.pkl`. Every request after that —
+including future restarts, as long as that cache file exists — is fast
+(well under a second). Don't open the frontend until the backend
+terminal prints `Application startup complete.`, or you'll see
+connection errors that look like a bug but are really just "not ready
+yet."
+
 ### 5. Launch the frontend
 
 ```bash
@@ -161,6 +176,18 @@ below it fills in a moment later once the background LLM call finishes
 adjust the fraud-loss/false-positive-cost assumptions to see how the
 optimal threshold shifts.
 
+### Running tests
+
+```bash
+python -m unittest discover -s tests
+```
+
+Covers `llm_agent.py`'s prompt sanitization (the prompt-injection
+defense) and every failure path against a mocked Gemini client —
+missing/invalid API key, rate limiting, server errors, malformed
+schema — each asserting it degrades to a safe `REVIEW` fallback instead
+of crashing. No API key or network access needed to run these.
+
 ## Project structure
 
 ```
@@ -177,6 +204,8 @@ risk-manager/
 │   └── llm_agent.py             <- Gemini (Google Gen AI API) agent, reasons over score + history
 ├── api/
 │   └── main.py                  <- FastAPI JSON API wrapping the src/ modules
+├── tests/
+│   └── test_llm_agent.py        <- llm_agent.py unit tests (mocked Gemini client)
 └── frontend/                    <- React + TypeScript + Tailwind SPA
     └── src/
         ├── api/client.ts        <- typed fetch client for the backend
