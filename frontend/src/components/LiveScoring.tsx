@@ -7,6 +7,7 @@ import {
   accentText,
   actionStatus,
   buttonBase,
+  buttonLabel,
   escalationStatus,
   focusRing,
   statusBadgeClass,
@@ -124,7 +125,7 @@ export default function LiveScoring() {
   return (
     <div className="grid grid-cols-1 lg:grid-cols-[280px_1fr] gap-6">
       <aside className="space-y-4">
-        <h2 className={`${typeScale.subTitle} uppercase tracking-wide text-neutral-400`}>Entity Session</h2>
+        <h2 className={`${typeScale.subTitle} uppercase tracking-wide text-app-faint`}>Entity Session</h2>
 
         <div>
           <label htmlFor="entity-select" className={`block ${typeScale.caption} mb-1`}>
@@ -132,7 +133,7 @@ export default function LiveScoring() {
           </label>
           <select
             id="entity-select"
-            className={`w-full bg-neutral-900 border border-neutral-700 rounded-md px-2 py-1.5 text-sm text-neutral-100 disabled:opacity-50 ${focusRing}`}
+            className={`w-full bg-app-surface border border-app-rule rounded-md px-2 py-1.5 text-sm text-app-ink disabled:opacity-50 ${focusRing}`}
             value={selectedEntity}
             disabled={loadingEntities}
             onChange={(e) => setSelectedEntity(e.target.value)}
@@ -161,7 +162,7 @@ export default function LiveScoring() {
             value={txnIdx}
             onChange={(e) => setTxnIdx(Number(e.target.value))}
             disabled={!txns.length}
-            className={`w-full accent-indigo-500 ${focusRing}`}
+            className={`w-full accent-app-accent ${focusRing}`}
           />
           {currentTxn && (
             <p className={`${typeScale.caption} mt-1`}>
@@ -172,7 +173,7 @@ export default function LiveScoring() {
 
         <button
           onClick={handleReset}
-          className={`w-full text-sm px-3 py-1.5 rounded-md border border-neutral-700 text-neutral-300 hover:bg-neutral-900 hover:border-neutral-600 ${buttonBase}`}
+          className={`w-full text-sm px-3 py-1.5 rounded-md border border-transparent text-app-muted hover:bg-app-ink/5 ${buttonLabel} ${buttonBase}`}
         >
           Reset entity memory
         </button>
@@ -180,19 +181,19 @@ export default function LiveScoring() {
         <button
           onClick={handleScore}
           disabled={!txns.length || scoring}
-          className={`w-full text-sm font-medium px-3 py-2 rounded-md bg-indigo-500 hover:bg-indigo-400 text-white ${buttonBase}`}
+          className={`w-full text-sm font-medium px-3 py-2 rounded-md border border-app-accent text-app-accent-soft bg-transparent hover:bg-app-accent/10 ${buttonLabel} ${buttonBase}`}
         >
           {scoring ? "Scoring..." : "Score this transaction"}
         </button>
 
-        {error && <p className="text-xs text-red-400 break-words">{error}</p>}
+        {error && <p className="text-xs text-app-danger break-words">{error}</p>}
       </aside>
 
       <section>
         {!result ? (
-          <div className="border border-dashed border-neutral-700 rounded-xl p-6 text-neutral-400 text-sm">
+          <div className="border border-dashed border-app-rule rounded-xl p-6 text-app-faint text-sm">
             Pick an entity and transaction number in the sidebar, then click{" "}
-            <span className="text-neutral-200 font-medium">Score this transaction</span>. Score several
+            <span className="text-app-ink font-medium">Score this transaction</span>. Score several
             transactions from the same entity in sequence to see the escalation state build up.
           </div>
         ) : (
@@ -203,9 +204,9 @@ export default function LiveScoring() {
                   plain-outline treatment everything else uses. */}
               <div className={`${surface} p-5`}>
                 <p className={typeScale.caption}>Risk Score</p>
-                <p className="text-4xl font-bold text-neutral-50 mt-1 tabular-nums">
+                <p className="text-4xl font-bold text-app-ink mt-1 tabular-nums">
                   {result.risk_score}
-                  <span className="text-lg font-normal text-neutral-500"> / 100</span>
+                  <span className="text-lg font-normal text-app-faint"> / 100</span>
                 </p>
                 <div className={`mt-3 ${statusBadgeClass(riskBand(result.risk_score).status)}`}>
                   <span className={statusDotClass(riskBand(result.risk_score).status)} />
@@ -234,11 +235,11 @@ export default function LiveScoring() {
 
               <div>
                 <h3 className={typeScale.subTitle}>Top Contributing Factors</h3>
-                <ul className="space-y-1.5 text-sm text-neutral-300 mt-1.5">
+                <ul className="space-y-1.5 text-sm text-app-muted mt-1.5">
                   {result.top_factors.map((f) => (
                     <li key={f.feature}>
-                      <span className="font-medium text-neutral-100">{f.label}</span>: {f.value}{" "}
-                      <span className="text-neutral-500">
+                      <span className="font-medium text-app-ink">{f.label}</span>: {f.value}{" "}
+                      <span className="text-app-faint">
                         (impact: {f.contribution >= 0 ? "+" : ""}
                         {f.contribution.toFixed(3)})
                       </span>
@@ -265,10 +266,10 @@ export default function LiveScoring() {
                 transaction, before any LLM call.
               </p>
 
-              <div className="pt-3 border-t border-neutral-800">
+              <div className="pt-3 border-t border-app-rule">
                 <h4 className={typeScale.subTitle}>AI Reviewer Explanation</h4>
                 {!explanation || explanation.status === "pending" ? (
-                  <p className="text-sm text-neutral-500 italic mt-1.5">Generating explanation…</p>
+                  <p className="text-sm text-app-faint italic mt-1.5">Generating explanation…</p>
                 ) : (
                   <div className="space-y-2 mt-1.5">
                     {explanation.verdict.action !== result.decision.action && (
@@ -281,7 +282,7 @@ export default function LiveScoring() {
                         </span>
                       </div>
                     )}
-                    <p className="text-sm text-neutral-200">{explanation.verdict.explanation}</p>
+                    <p className="text-sm text-app-ink">{explanation.verdict.explanation}</p>
                     <p className={typeScale.caption}>Rationale: {explanation.verdict.rationale}</p>
                   </div>
                 )}

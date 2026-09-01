@@ -97,7 +97,7 @@ export default function CostAnalysis() {
             step={100}
             value={fraudLoss}
             onChange={(e) => setFraudLoss(Number(e.target.value))}
-            className={`w-full bg-neutral-900 border border-neutral-700 rounded-md px-2 py-1.5 text-sm text-neutral-100 ${focusRing}`}
+            className={`w-full bg-app-surface border border-app-rule rounded-md px-2 py-1.5 text-sm text-app-ink ${focusRing}`}
           />
         </div>
         <div>
@@ -110,16 +110,16 @@ export default function CostAnalysis() {
             step={10}
             value={fpCost}
             onChange={(e) => setFpCost(Number(e.target.value))}
-            className={`w-full bg-neutral-900 border border-neutral-700 rounded-md px-2 py-1.5 text-sm text-neutral-100 ${focusRing}`}
+            className={`w-full bg-app-surface border border-app-rule rounded-md px-2 py-1.5 text-sm text-app-ink ${focusRing}`}
           />
         </div>
       </div>
 
-      {error && <p className="text-sm text-red-400">{error}</p>}
+      {error && <p className="text-sm text-app-danger">{error}</p>}
 
       {data && (
         data.eval_report ? (
-          <pre className="border border-neutral-800 rounded-xl p-4 text-xs text-neutral-300 overflow-x-auto whitespace-pre">
+          <pre className="border border-app-rule rounded-xl p-4 text-xs text-app-muted overflow-x-auto whitespace-pre">
             {data.eval_report}
           </pre>
         ) : (
@@ -142,7 +142,7 @@ export default function CostAnalysis() {
           columns the assumed false-positive cost.
         </p>
 
-        {sensitivityError && <p className="text-sm text-red-400 mt-2">{sensitivityError}</p>}
+        {sensitivityError && <p className="text-sm text-app-danger mt-2">{sensitivityError}</p>}
 
         {sensitivityMessage && (
           <p className="text-sm text-amber-300 bg-amber-500/10 border border-amber-500/30 rounded-md px-3 py-2 mt-2">
@@ -152,26 +152,26 @@ export default function CostAnalysis() {
 
         {sensitivity && (
           <div className="overflow-x-auto mt-3">
-            <table className="text-xs text-neutral-300 w-full">
+            <table className="text-xs text-app-muted w-full">
               <thead>
-                <tr className="border-b border-neutral-700">
-                  <th className="bg-neutral-900 px-3 py-1.5 text-left font-medium text-neutral-400">
+                <tr className="border-b border-app-rule">
+                  <th className="bg-app-surface px-3 py-1.5 text-left font-medium text-app-faint">
                     fraud loss \ fp cost
                   </th>
                   {sensitivity.fp_cost_multipliers.map((fpMult) => (
                     <th
                       key={fpMult}
-                      className="bg-neutral-900 px-3 py-1.5 text-right font-medium text-neutral-400"
+                      className="bg-app-surface px-3 py-1.5 text-right font-medium text-app-faint"
                     >
                       ₹{Math.round(sensitivity.base_fp_cost * fpMult).toLocaleString()}
                     </th>
                   ))}
                 </tr>
               </thead>
-              <tbody className="divide-y divide-neutral-800">
+              <tbody className="divide-y divide-app-rule">
                 {sensitivity.fraud_loss_multipliers.map((flMult) => (
                   <tr key={flMult}>
-                    <th className="px-3 py-1.5 text-left font-normal text-neutral-400 bg-neutral-900">
+                    <th className="px-3 py-1.5 text-left font-normal text-app-faint bg-app-surface">
                       ₹{Math.round(sensitivity.base_fraud_loss * flMult).toLocaleString()}
                     </th>
                     {sensitivity.fp_cost_multipliers.map((fpMult) => {
@@ -205,7 +205,7 @@ export default function CostAnalysis() {
           bucket separately — no retraining per bucket — to check for drift.
         </p>
 
-        {driftError && <p className="text-sm text-red-400 mt-2">{driftError}</p>}
+        {driftError && <p className="text-sm text-app-danger mt-2">{driftError}</p>}
 
         {driftMessage && (
           <p className="text-sm text-amber-300 bg-amber-500/10 border border-amber-500/30 rounded-md px-3 py-2 mt-2">
@@ -217,7 +217,7 @@ export default function CostAnalysis() {
           const points = aucChartPoints(drift.buckets);
           const aucs = points.map((p) => p.rocAuc);
           return (
-            <div className="mt-3 border border-neutral-800 rounded-xl p-4">
+            <div className="mt-3 border border-app-rule rounded-xl p-4">
               <svg
                 viewBox={`0 0 ${CHART_WIDTH} ${CHART_HEIGHT}`}
                 className="w-full max-w-lg"
@@ -227,12 +227,12 @@ export default function CostAnalysis() {
                 <polyline
                   points={points.map((p) => `${p.x.toFixed(1)},${p.y.toFixed(1)}`).join(" ")}
                   fill="none"
-                  stroke="#818cf8"
+                  stroke="#8fa3ad"
                   strokeWidth={2}
                 />
                 {points.map((p) => (
                   <g key={p.bucket}>
-                    <circle cx={p.x} cy={p.y} r={3} fill="#818cf8" />
+                    <circle cx={p.x} cy={p.y} r={3} fill="#8fa3ad" />
                     <text x={p.x} y={CHART_HEIGHT - 4} fontSize={9} fill="#94a3b8" textAnchor="middle">
                       {p.rocAuc.toFixed(3)}
                     </text>

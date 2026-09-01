@@ -6,7 +6,7 @@ function formatPct(p: number | null): string {
   return p === null ? "—" : `${(p * 100).toFixed(0)}%`;
 }
 
-const TH_CLASS = `px-3 py-2 font-medium text-neutral-400 ${typeScale.caption}`;
+const TH_CLASS = `px-3 py-2 font-medium text-app-faint ${typeScale.caption}`;
 const TD_CLASS = "px-3 py-2";
 
 export default function ConsistencyAnalysis() {
@@ -37,7 +37,7 @@ export default function ConsistencyAnalysis() {
         </p>
       </div>
 
-      {error && <p className="text-sm text-red-400">{error}</p>}
+      {error && <p className="text-sm text-app-danger">{error}</p>}
 
       {message && (
         <p className="text-sm text-amber-300 bg-amber-500/10 border border-amber-500/30 rounded-md px-3 py-2">
@@ -65,9 +65,9 @@ export default function ConsistencyAnalysis() {
               Part B — LLM self-consistency and cross-agreement (real Gemini API calls)
             </h3>
             <div className="overflow-x-auto mt-2">
-              <table className="text-xs text-neutral-300 w-full">
+              <table className="text-xs text-app-muted w-full">
                 <thead>
-                  <tr className="border-b border-neutral-700">
+                  <tr className="border-b border-app-rule">
                     <th className={`${TH_CLASS} text-left`}>Band</th>
                     <th className={`${TH_CLASS} text-left`}>Escalation</th>
                     <th className={`${TH_CLASS} text-right`}>Risk score</th>
@@ -78,7 +78,7 @@ export default function ConsistencyAnalysis() {
                     <th className={`${TH_CLASS} text-left`}>Cross-agree</th>
                   </tr>
                 </thead>
-                <tbody className="divide-y divide-neutral-800">
+                <tbody className="divide-y divide-app-rule">
                   {data.part_b_pairs.map((pair, i) => (
                     <tr key={i}>
                       <td className={TD_CLASS}>{pair.band}</td>

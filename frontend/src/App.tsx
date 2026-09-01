@@ -29,8 +29,8 @@ export default function App() {
   const ActivePanel = TAB_PANELS[tab];
 
   return (
-    <div className="min-h-screen bg-neutral-950 text-neutral-100">
-      <header className="border-b border-neutral-800 px-6 py-5">
+    <div className="min-h-screen bg-app-bg text-app-ink">
+      <header className="border-b border-app-rule px-6 py-5">
         <h1 className={typeScale.pageTitle}>AI Risk Manager</h1>
         <p className={`${typeScale.caption} mt-1`}>
           Entity-aware transaction risk scoring with a local LLM reasoning layer — Razorpay
@@ -38,7 +38,7 @@ export default function App() {
         </p>
       </header>
 
-      <nav className="flex gap-1 px-6 pt-4 border-b border-neutral-800" role="tablist">
+      <nav className="flex gap-1 px-6 pt-4 border-b border-app-rule" role="tablist">
         {TABS.map((t) => (
           <button
             key={t.id}
@@ -47,8 +47,8 @@ export default function App() {
             onClick={() => setTab(t.id)}
             className={`px-4 py-2 text-sm font-medium rounded-t-md border-b-2 transition ${focusRing} ${
               tab === t.id
-                ? "border-indigo-500 text-indigo-300"
-                : "border-transparent text-neutral-400 hover:text-neutral-200"
+                ? "border-app-accent text-app-accent-soft"
+                : "border-transparent text-app-faint hover:text-app-muted"
             }`}
           >
             {t.label}

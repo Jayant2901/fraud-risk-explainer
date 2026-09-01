@@ -6,6 +6,7 @@ import {
   accentText,
   actionStatus,
   buttonBase,
+  buttonLabel,
   statusBadgeClass,
   statusDotClass,
   typeScale,
@@ -62,7 +63,7 @@ export default function ReviewQueue() {
         </p>
       </div>
 
-      {error && <p className="text-sm text-red-400">{error}</p>}
+      {error && <p className="text-sm text-app-danger">{error}</p>}
 
       {metrics && (
         <div>
@@ -70,14 +71,14 @@ export default function ReviewQueue() {
             Reviewer precision so far ({metrics.total_disposed} disposed)
           </h3>
           {metrics.total_disposed === 0 ? (
-            <p className="text-sm text-neutral-500 mt-1.5">
+            <p className="text-sm text-app-faint mt-1.5">
               No dispositions yet — confirm or dismiss items below to start building this up.
             </p>
           ) : (
-            <div className="grid grid-cols-1 sm:grid-cols-3 gap-4 text-sm mt-2 divide-y sm:divide-y-0 sm:divide-x divide-neutral-800">
+            <div className="grid grid-cols-1 sm:grid-cols-3 gap-4 text-sm mt-2 divide-y sm:divide-y-0 sm:divide-x divide-app-rule">
               <div className="sm:pr-4">
                 <p className={`${typeScale.caption} uppercase tracking-wide`}>Overall</p>
-                <p className="text-xl font-semibold text-neutral-100 tabular-nums">{formatPct(metrics.overall_precision)}</p>
+                <p className="text-xl font-semibold text-app-ink tabular-nums">{formatPct(metrics.overall_precision)}</p>
               </div>
               <div className="sm:px-4 pt-3 sm:pt-0">
                 <p className={`${typeScale.caption} uppercase tracking-wide`}>
@@ -89,7 +90,7 @@ export default function ReviewQueue() {
                 <p className={`${typeScale.caption} uppercase tracking-wide`}>
                   Not escalated ({metrics.non_escalated_count})
                 </p>
-                <p className="text-xl font-semibold text-neutral-100 tabular-nums">{formatPct(metrics.non_escalated_precision)}</p>
+                <p className="text-xl font-semibold text-app-ink tabular-nums">{formatPct(metrics.non_escalated_precision)}</p>
               </div>
             </div>
           )}
@@ -102,12 +103,12 @@ export default function ReviewQueue() {
         </h3>
 
         {!loading && items.length === 0 ? (
-          <div className="mt-2 border border-dashed border-neutral-700 rounded-xl p-6 text-neutral-400 text-sm">
+          <div className="mt-2 border border-dashed border-app-rule rounded-xl p-6 text-app-faint text-sm">
             Nothing pending. Score a transaction in the Live Scoring tab that comes back REVIEW or
             BLOCK, and it'll show up here.
           </div>
         ) : (
-          <ul className="mt-2 divide-y divide-neutral-800 border-t border-neutral-800">
+          <ul className="mt-2 divide-y divide-app-rule border-t border-app-rule">
             {items.map((item) => (
               <li
                 key={item.verdict_id}
@@ -115,7 +116,7 @@ export default function ReviewQueue() {
               >
                 <div className="flex-1 space-y-1">
                   <div className="flex items-center gap-2 flex-wrap">
-                    <span className="text-sm font-medium text-neutral-100">{item.entity_id}</span>
+                    <span className="text-sm font-medium text-app-ink">{item.entity_id}</span>
                     <span className={typeScale.caption}>txn #{item.txn_index}</span>
                     <span className={statusBadgeClass(actionStatus[item.decision.action])}>
                       <span className={statusDotClass(actionStatus[item.decision.action])} />
@@ -134,14 +135,14 @@ export default function ReviewQueue() {
                   <button
                     onClick={() => handleDispose(item.verdict_id, "CONFIRMED_FRAUD")}
                     disabled={disposing === item.verdict_id}
-                    className={`text-xs font-medium px-3 py-1.5 rounded-md bg-red-500/10 border border-red-500/30 text-red-300 hover:bg-red-500/20 ${buttonBase}`}
+                    className={`text-xs font-medium px-3 py-1.5 rounded-md bg-app-danger/10 border border-app-danger/30 text-app-danger hover:bg-app-danger/20 ${buttonLabel} ${buttonBase}`}
                   >
                     Confirm Fraud
                   </button>
                   <button
                     onClick={() => handleDispose(item.verdict_id, "FALSE_POSITIVE")}
                     disabled={disposing === item.verdict_id}
-                    className={`text-xs font-medium px-3 py-1.5 rounded-md bg-emerald-500/10 border border-emerald-500/30 text-emerald-300 hover:bg-emerald-500/20 ${buttonBase}`}
+                    className={`text-xs font-medium px-3 py-1.5 rounded-md bg-emerald-500/10 border border-emerald-500/30 text-emerald-300 hover:bg-emerald-500/20 ${buttonLabel} ${buttonBase}`}
                   >
                     Mark False Positive
                   </button>

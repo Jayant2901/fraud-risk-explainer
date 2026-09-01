@@ -1,1 +1,22 @@
+@import url('https://fonts.googleapis.com/css2?family=Orbitron:wght@500;700&family=JetBrains+Mono:wght@400;500;600&display=swap');
 @import "tailwindcss";
+
+/* Dark minimal theme tokens — see design-handoff/README.md. Registered
+   via Tailwind's @theme so they're usable as ordinary utilities
+   (bg-app-surface, text-app-accent/40, ...) including opacity modifiers. */
+@theme {
+  --color-app-bg: #121316;
+  --color-app-surface: #1a1b1f;
+  --color-app-ink: #e6e7ea;
+  --color-app-muted: #9a9ca1;
+  --color-app-faint: #6b6d72;
+  --color-app-rule: rgba(230, 231, 234, 0.12);
+  --color-app-accent: #8fa3ad;
+  --color-app-accent-soft: #b7c5cc;
+  --color-app-danger: #c98a7a;
+  --font-heading: "Orbitron", sans-serif;
+}
+
+body {
+  font-family: "JetBrains Mono", ui-monospace, monospace;
+}

@@ -34,7 +34,7 @@ export default function Overview() {
         <div className="mt-3 grid grid-cols-1 sm:grid-cols-2 gap-4">
           {TAB_QUESTIONS.map((t) => (
             <div key={t.label} className={`${surface} p-4`}>
-              <p className={`${typeScale.caption} font-medium text-neutral-200 uppercase tracking-wide`}>
+              <p className={`${typeScale.caption} font-medium text-app-ink uppercase tracking-wide`}>
                 {t.label}
               </p>
               <p className={`${typeScale.body} mt-1.5`}>{t.question}</p>
@@ -52,7 +52,7 @@ export default function Overview() {
             href="https://engineering.razorpay.com/meet-bumblebee-the-multi-agent-ai-architecture-that-changed-fraud-detection-at-razorpay-c2b6d5704f51"
             target="_blank"
             rel="noreferrer"
-            className="text-indigo-300 underline decoration-indigo-500/40 underline-offset-2 hover:text-indigo-200"
+            className="text-app-accent-soft underline decoration-app-accent/40 underline-offset-2 hover:text-app-accent"
           >
             Meet Bumblebee
           </a>{" "}
@@ -61,7 +61,7 @@ export default function Overview() {
             href="https://engineering.razorpay.com/our-obsession-with-merchant-experience-breaking-the-risk-review-black-box-7fa38d699ef1"
             target="_blank"
             rel="noreferrer"
-            className="text-indigo-300 underline decoration-indigo-500/40 underline-offset-2 hover:text-indigo-200"
+            className="text-app-accent-soft underline decoration-app-accent/40 underline-offset-2 hover:text-app-accent"
           >
             Breaking the Risk Review Black Box
           </a>
