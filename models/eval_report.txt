@@ -1,0 +1,28 @@
+ROC-AUC: 0.9535
+Average Precision (PR-AUC): 0.6613
+
+=== Default threshold (0.5) ===
+              precision    recall  f1-score   support
+
+           0     0.9931    0.9362    0.9638    114044
+           1     0.3133    0.8169    0.4529      4064
+
+    accuracy                         0.9321    118108
+   macro avg     0.6532    0.8766    0.7083    118108
+weighted avg     0.9697    0.9321    0.9462    118108
+
+Estimated cost at threshold 0.5: Rs 4,811,700
+  (assumes avg fraud loss = Rs 5,000/missed fraud, avg false-positive cost = Rs 150/wrongly-flagged legit txn)
+
+=== Cost-optimal threshold (0.33) ===
+              precision    recall  f1-score   support
+
+           0     0.9954    0.8793    0.9338    114044
+           1     0.2075    0.8871    0.3364      4064
+
+    accuracy                         0.8796    118108
+   macro avg     0.6015    0.8832    0.6351    118108
+weighted avg     0.9683    0.8796    0.9132    118108
+
+Estimated cost at optimal threshold: Rs 4,359,900
+Estimated savings vs default: Rs 451,800 (9.4%)

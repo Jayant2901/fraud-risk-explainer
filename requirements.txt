@@ -1,0 +1,11 @@
+kagglehub
+pandas
+numpy
+scikit-learn
+xgboost
+shap
+fastapi
+uvicorn[standard]
+google-genai
+pydantic
+joblib

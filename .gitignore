@@ -1,0 +1,21 @@
+# Dataset (too large for git; regenerate with `python src/download_data.py`)
+data/*.csv
+
+# Generated caches (regenerated automatically on first run)
+models/sample_data_cache.pkl
+
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.pytest_cache/
+
+# Editor (machine-specific interpreter path, not portable across clones)
+.vscode/
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Local tooling state
+.claude/
