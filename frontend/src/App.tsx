@@ -57,7 +57,9 @@ export default function App() {
       </nav>
 
       <main className="p-6">
-        <ActivePanel />
+        <div className="max-w-7xl mx-auto">
+          <ActivePanel />
+        </div>
       </main>
     </div>
   );

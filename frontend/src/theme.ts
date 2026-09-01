@@ -69,6 +69,11 @@ export const escalationStatus: Record<"NORMAL" | "WATCH" | "ELEVATED", Status> =
   ELEVATED: "danger",
 };
 
+// ---- Surface elevation — one step lighter than the page background
+// (bg-neutral-950), used for grouped content that needs to visually
+// separate from the page without resorting to a border on every panel.
+export const surface = "bg-neutral-900 rounded-xl";
+
 // ---- Accent (indigo) — used for the one non-status highlight color,
 // e.g. active tab, escalation-triggered badge, chart line.
 export const accentText = "text-indigo-300";

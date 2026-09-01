@@ -12,6 +12,7 @@ import {
   statusBadgeClass,
   statusDotClass,
   statusTextClass,
+  surface,
   typeScale,
 } from "../theme";
 
@@ -200,7 +201,7 @@ export default function LiveScoring() {
               {/* Primary result — the one thing on this page that most needs
                   visual weight, so it gets a filled card instead of the
                   plain-outline treatment everything else uses. */}
-              <div className="bg-neutral-900 border border-neutral-800 rounded-xl p-5">
+              <div className={`${surface} p-5`}>
                 <p className={typeScale.caption}>Risk Score</p>
                 <p className="text-4xl font-bold text-neutral-50 mt-1 tabular-nums">
                   {result.risk_score}
@@ -247,7 +248,7 @@ export default function LiveScoring() {
               </div>
             </div>
 
-            <div className="bg-neutral-900 border border-neutral-800 rounded-xl p-5 space-y-3">
+            <div className={`${surface} p-5 space-y-3`}>
               <h3 className={typeScale.subTitle}>Automated Decision</h3>
               <div className={statusBadgeClass(actionStatus[result.decision.action])}>
                 <span className={statusDotClass(actionStatus[result.decision.action])} />

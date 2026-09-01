@@ -1,4 +1,4 @@
-import { typeScale } from "../theme";
+import { surface, typeScale } from "../theme";
 
 const TAB_QUESTIONS: { label: string; question: string }[] = [
   { label: "Live Scoring", question: "Given one transaction and an entity's recent history, what would the model + LLM reviewer decide right now?" },
@@ -9,8 +9,8 @@ const TAB_QUESTIONS: { label: string; question: string }[] = [
 
 export default function Overview() {
   return (
-    <div className="max-w-3xl space-y-6">
-      <div>
+    <div className="space-y-8">
+      <div className="max-w-3xl">
         <h2 className={typeScale.sectionTitle}>What this is</h2>
         <p className={`${typeScale.body} mt-2`}>
           A transaction risk-scoring pipeline built for Razorpay's Buildathon (Track 2): a
@@ -20,7 +20,7 @@ export default function Overview() {
         </p>
       </div>
 
-      <div className="border border-amber-500/30 bg-amber-500/10 rounded-lg px-4 py-3">
+      <div className="max-w-3xl border border-amber-500/30 bg-amber-500/10 rounded-lg px-4 py-3">
         <p className="text-sm text-amber-200">
           This runs entirely on the historical, public <strong>IEEE-CIS Fraud Detection</strong>{" "}
           dataset from Kaggle — not live Razorpay data or a production Razorpay system. It's a
@@ -31,17 +31,19 @@ export default function Overview() {
 
       <div>
         <h3 className={typeScale.subTitle}>What each tab actually answers</h3>
-        <dl className="mt-3 divide-y divide-neutral-800 border-t border-b border-neutral-800">
+        <div className="mt-3 grid grid-cols-1 sm:grid-cols-2 gap-4">
           {TAB_QUESTIONS.map((t) => (
-            <div key={t.label} className="py-3 grid grid-cols-1 sm:grid-cols-[160px_1fr] gap-1 sm:gap-4">
-              <dt className={`${typeScale.caption} font-medium text-neutral-200 sm:pt-0.5`}>{t.label}</dt>
-              <dd className={typeScale.body}>{t.question}</dd>
+            <div key={t.label} className={`${surface} p-4`}>
+              <p className={`${typeScale.caption} font-medium text-neutral-200 uppercase tracking-wide`}>
+                {t.label}
+              </p>
+              <p className={`${typeScale.body} mt-1.5`}>{t.question}</p>
             </div>
           ))}
-        </dl>
+        </div>
       </div>
 
-      <div>
+      <div className="max-w-3xl">
         <h3 className={typeScale.subTitle}>Grounding</h3>
         <p className={`${typeScale.body} mt-2`}>
           The escalation logic and the consistency tab are both grounded in problems Razorpay has
