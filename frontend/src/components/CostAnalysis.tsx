@@ -1,5 +1,40 @@
 import { useEffect, useState } from "react";
-import { api, type CostAnalysis as CostAnalysisData, type CostSensitivity } from "../api/client";
+import { api, type CostAnalysis as CostAnalysisData, type CostSensitivity, type DriftAnalysis } from "../api/client";
+
+const CHART_WIDTH = 480;
+const CHART_HEIGHT = 140;
+const CHART_PADDING = 24;
+
+interface ChartPoint {
+  bucket: number;
+  rocAuc: number;
+  x: number;
+  y: number;
+}
+
+/** Maps each bucket's roc_auc onto SVG coordinates, auto-scaling the
+ * y-axis to the data's own min/max (padded a little) so a small, real
+ * spread is still visible rather than looking flat against a fixed
+ * 0-1 axis. Buckets with no AUC (a single-class bucket) are skipped. */
+function aucChartPoints(buckets: DriftAnalysis["buckets"]): ChartPoint[] {
+  const withAuc = buckets.filter((b): b is typeof b & { roc_auc: number } => b.roc_auc !== null);
+  if (withAuc.length === 0) return [];
+
+  const aucs = withAuc.map((b) => b.roc_auc);
+  const min = Math.min(...aucs);
+  const max = Math.max(...aucs);
+  const range = max - min || 0.01;
+  const yPad = range * 0.2;
+
+  const innerWidth = CHART_WIDTH - CHART_PADDING * 2;
+  const innerHeight = CHART_HEIGHT - CHART_PADDING * 2;
+
+  return withAuc.map((b, i) => {
+    const x = CHART_PADDING + (withAuc.length === 1 ? 0 : (i / (withAuc.length - 1)) * innerWidth);
+    const y = CHART_PADDING + innerHeight - ((b.roc_auc - (min - yPad)) / (range + 2 * yPad)) * innerHeight;
+    return { bucket: b.bucket, rocAuc: b.roc_auc, x, y };
+  });
+}
 
 export default function CostAnalysis() {
   const [fraudLoss, setFraudLoss] = useState(5000);
@@ -9,6 +44,9 @@ export default function CostAnalysis() {
   const [sensitivity, setSensitivity] = useState<CostSensitivity | null>(null);
   const [sensitivityMessage, setSensitivityMessage] = useState<string | null>(null);
   const [sensitivityError, setSensitivityError] = useState<string | null>(null);
+  const [drift, setDrift] = useState<DriftAnalysis | null>(null);
+  const [driftMessage, setDriftMessage] = useState<string | null>(null);
+  const [driftError, setDriftError] = useState<string | null>(null);
 
   useEffect(() => {
     api
@@ -25,6 +63,16 @@ export default function CostAnalysis() {
         setSensitivityMessage(res.message);
       })
       .catch((e) => setSensitivityError(String(e)));
+  }, []);
+
+  useEffect(() => {
+    api
+      .driftAnalysis()
+      .then((res) => {
+        setDrift(res.drift);
+        setDriftMessage(res.message);
+      })
+      .catch((e) => setDriftError(String(e)));
   }, []);
 
   return (
@@ -144,6 +192,62 @@ export default function CostAnalysis() {
             </table>
           </div>
         )}
+      </div>
+
+      <div>
+        <h3 className="text-sm font-semibold text-slate-100">
+          Does the model still perform well later in the test window?
+        </h3>
+        <p className="text-xs text-slate-400 mt-1 max-w-2xl">
+          A single AUC number from one split quietly assumes the model stays good forever. This
+          buckets the same real test set by time and scores the already-trained model in each
+          bucket separately — no retraining per bucket — to check for drift.
+        </p>
+
+        {driftError && <p className="text-sm text-red-400 mt-2">{driftError}</p>}
+
+        {driftMessage && (
+          <p className="text-sm text-amber-400 bg-amber-500/10 border border-amber-500/30 rounded-md px-3 py-2 mt-2">
+            {driftMessage}
+          </p>
+        )}
+
+        {drift && (() => {
+          const points = aucChartPoints(drift.buckets);
+          const aucs = points.map((p) => p.rocAuc);
+          return (
+            <div className="mt-3 bg-slate-900/60 border border-slate-800 rounded-xl p-4">
+              <svg
+                viewBox={`0 0 ${CHART_WIDTH} ${CHART_HEIGHT}`}
+                className="w-full max-w-lg"
+                role="img"
+                aria-label="ROC-AUC across time buckets of the test set"
+              >
+                <polyline
+                  points={points.map((p) => `${p.x.toFixed(1)},${p.y.toFixed(1)}`).join(" ")}
+                  fill="none"
+                  stroke="#818cf8"
+                  strokeWidth={2}
+                />
+                {points.map((p) => (
+                  <g key={p.bucket}>
+                    <circle cx={p.x} cy={p.y} r={3} fill="#818cf8" />
+                    <text x={p.x} y={CHART_HEIGHT - 4} fontSize={9} fill="#94a3b8" textAnchor="middle">
+                      {p.rocAuc.toFixed(3)}
+                    </text>
+                  </g>
+                ))}
+              </svg>
+              {aucs.length > 0 && (
+                <p className="text-xs text-slate-500 mt-2">
+                  {drift.buckets.length} buckets over a {(drift.span_seconds / 86400).toFixed(1)}-day test
+                  window. ROC-AUC ranges from {Math.min(...aucs).toFixed(4)} to {Math.max(...aucs).toFixed(4)}{" "}
+                  across buckets.
+                </p>
+              )}
+            </div>
+          );
+        })()}
       </div>
     </div>
   );

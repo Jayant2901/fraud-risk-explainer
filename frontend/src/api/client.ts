@@ -87,6 +87,27 @@ export interface ReviewQueueItem {
   disposed_at: string | null;
 }
 
+export interface DriftBucket {
+  bucket: number;
+  n: number;
+  n_fraud: number;
+  roc_auc: number | null;
+  precision: number;
+  recall: number;
+}
+
+export interface DriftAnalysis {
+  span_seconds: number;
+  num_buckets: number;
+  edges: number[];
+  buckets: DriftBucket[];
+}
+
+export interface DriftAnalysisResult {
+  drift: DriftAnalysis | null;
+  message: string | null;
+}
+
 export interface ReviewQueueMetrics {
   total_disposed: number;
   overall_precision: number | null;
@@ -157,4 +178,5 @@ export const api = {
       body: JSON.stringify({ disposition }),
     }),
   reviewQueueMetrics: () => request<ReviewQueueMetrics>("/review-queue/metrics"),
+  driftAnalysis: () => request<DriftAnalysisResult>("/drift-analysis"),
 };

@@ -8,6 +8,7 @@ vi.mock("../api/client", () => ({
   api: {
     costAnalysis: vi.fn(),
     costSensitivity: vi.fn(),
+    driftAnalysis: vi.fn(),
   },
 }));
 
@@ -22,6 +23,10 @@ function mockCostAnalysisResponse() {
   mockedApi.costSensitivity.mockResolvedValue({
     sensitivity: null,
     message: "No sensitivity sweep yet — run `python src/cost_sensitivity.py` to generate one.",
+  });
+  mockedApi.driftAnalysis.mockResolvedValue({
+    drift: null,
+    message: "No drift report yet — run `python src/drift_analysis.py` to generate one.",
   });
 }
 
@@ -72,6 +77,7 @@ describe("CostAnalysis", () => {
       params: { fraud_loss: 5000, fp_cost: 150 },
     });
     mockedApi.costSensitivity.mockResolvedValue({ sensitivity: null, message: null });
+    mockedApi.driftAnalysis.mockResolvedValue({ drift: null, message: null });
 
     render(<CostAnalysis />);
 
@@ -89,6 +95,7 @@ describe("CostAnalysis", () => {
   it("surfaces an error message if the request rejects", async () => {
     mockedApi.costAnalysis.mockRejectedValue(new Error("server error"));
     mockedApi.costSensitivity.mockResolvedValue({ sensitivity: null, message: null });
+    mockedApi.driftAnalysis.mockResolvedValue({ drift: null, message: null });
 
     render(<CostAnalysis />);
 
@@ -131,5 +138,35 @@ describe("CostAnalysis", () => {
 
     expect(await screen.findByText("0.33")).toBeInTheDocument();
     expect(screen.getByText("0.22")).toBeInTheDocument();
+  });
+
+  it("renders the drift chart with the AUC range when a report exists", async () => {
+    mockCostAnalysisResponse();
+    mockedApi.driftAnalysis.mockResolvedValue({
+      drift: {
+        span_seconds: 3618231,
+        num_buckets: 3,
+        edges: [0, 1206077, 2412154, 3618231],
+        buckets: [
+          { bucket: 0, n: 100, n_fraud: 5, roc_auc: 0.95, precision: 0.2, recall: 0.85 },
+          { bucket: 1, n: 100, n_fraud: 5, roc_auc: 0.93, precision: 0.2, recall: 0.85 },
+          { bucket: 2, n: 100, n_fraud: 5, roc_auc: 0.96, precision: 0.2, recall: 0.85 },
+        ],
+      },
+      message: null,
+    });
+
+    render(<CostAnalysis />);
+
+    expect(await screen.findByRole("img", { name: /ROC-AUC across time buckets/i })).toBeInTheDocument();
+    expect(screen.getByText(/ranges from 0.9300 to 0.9600/)).toBeInTheDocument();
+  });
+
+  it("prompts to run the drift script when no report exists yet", async () => {
+    mockCostAnalysisResponse();
+
+    render(<CostAnalysis />);
+
+    expect(await screen.findByText(/drift_analysis\.py/)).toBeInTheDocument();
   });
 });

@@ -138,6 +138,7 @@ router = APIRouter(dependencies=[Depends(verify_api_key)])
 EVAL_REPORT_PATH = "models/eval_report.txt"
 ESCALATION_ABLATION_REPORT_PATH = "models/escalation_ablation_report.txt"
 COST_SENSITIVITY_REPORT_PATH = "models/cost_sensitivity_report.json"
+DRIFT_REPORT_PATH = "models/drift_report.json"
 
 # --- Singletons (model, explainer, agent, entity memory) ---------------
 # REDIS_URL is read once here, at process startup — same as any other
@@ -424,6 +425,17 @@ def get_escalation_ablation():
         }
     with open(ESCALATION_ABLATION_REPORT_PATH) as f:
         return {"report": f.read(), "message": None}
+
+
+@router.get("/api/drift-analysis")
+def get_drift_analysis():
+    if not os.path.exists(DRIFT_REPORT_PATH):
+        return {
+            "drift": None,
+            "message": "No drift report yet — run `python src/drift_analysis.py` to generate one.",
+        }
+    with open(DRIFT_REPORT_PATH, encoding="utf-8") as f:
+        return {"drift": json.load(f), "message": None}
 
 
 @app.get("/api/health")
