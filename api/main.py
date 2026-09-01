@@ -139,6 +139,7 @@ EVAL_REPORT_PATH = "models/eval_report.txt"
 ESCALATION_ABLATION_REPORT_PATH = "models/escalation_ablation_report.txt"
 COST_SENSITIVITY_REPORT_PATH = "models/cost_sensitivity_report.json"
 DRIFT_REPORT_PATH = "models/drift_report.json"
+CONSISTENCY_REPORT_PATH = "models/consistency_report.json"
 
 # --- Singletons (model, explainer, agent, entity memory) ---------------
 # REDIS_URL is read once here, at process startup — same as any other
@@ -436,6 +437,17 @@ def get_drift_analysis():
         }
     with open(DRIFT_REPORT_PATH, encoding="utf-8") as f:
         return {"drift": json.load(f), "message": None}
+
+
+@router.get("/api/consistency-analysis")
+def get_consistency_analysis():
+    if not os.path.exists(CONSISTENCY_REPORT_PATH):
+        return {
+            "consistency": None,
+            "message": "No consistency report yet — run `python src/consistency_analysis.py` to generate one.",
+        }
+    with open(CONSISTENCY_REPORT_PATH, encoding="utf-8") as f:
+        return {"consistency": json.load(f), "message": None}
 
 
 @app.get("/api/health")

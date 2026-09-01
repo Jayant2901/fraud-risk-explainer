@@ -2,8 +2,9 @@ import { useState } from "react";
 import LiveScoring from "./components/LiveScoring";
 import CostAnalysis from "./components/CostAnalysis";
 import ReviewQueue from "./components/ReviewQueue";
+import ConsistencyAnalysis from "./components/ConsistencyAnalysis";
 
-type Tab = "live" | "cost" | "review";
+type Tab = "live" | "cost" | "review" | "consistency";
 
 export default function App() {
   const [tab, setTab] = useState<Tab>("live");
@@ -23,6 +24,7 @@ export default function App() {
           { id: "live" as const, label: "Live Scoring" },
           { id: "review" as const, label: "Review Queue" },
           { id: "cost" as const, label: "Cost-Optimal Threshold" },
+          { id: "consistency" as const, label: "Consistency" },
         ].map((t) => (
           <button
             key={t.id}
@@ -39,7 +41,15 @@ export default function App() {
       </nav>
 
       <main className="p-6">
-        {tab === "live" ? <LiveScoring /> : tab === "review" ? <ReviewQueue /> : <CostAnalysis />}
+        {tab === "live" ? (
+          <LiveScoring />
+        ) : tab === "review" ? (
+          <ReviewQueue />
+        ) : tab === "consistency" ? (
+          <ConsistencyAnalysis />
+        ) : (
+          <CostAnalysis />
+        )}
       </main>
     </div>
   );

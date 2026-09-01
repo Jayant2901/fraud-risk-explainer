@@ -1,0 +1,46 @@
+Reviewer consistency analysis
+===============================
+
+Part A -- Boundary fragility (deterministic rules, full test set, no API calls)
+----------------------------------------------------------------------------------
+Flagged (REVIEW/BLOCK) transactions: 13,980
+Within +/-2 points of a decision boundary (40 or 80): 1,433 (10.25%)
+
+Part B -- LLM self-consistency and cross-agreement (real Gemini API calls)
+----------------------------------------------------------------------------
+5 calls per (transaction, escalation context) pair, 24 pairs, up to 120 total API calls.
+
+band              context      risk  status             valid  excl   modal self-cons.  cross-agree
+clear_allow       NORMAL        0.1  ok                     5     0   ALLOW       1.00         True
+clear_allow       ELEVATED      0.1  ok                     5     0  REVIEW       1.00         True
+clear_allow       NORMAL       12.6  ok                     5     0   ALLOW       1.00         True
+clear_allow       ELEVATED     12.6  ok                     5     0  REVIEW       1.00         True
+clear_allow       NORMAL       10.1  insufficient_data      0     5       -          -            -
+clear_allow       ELEVATED     10.1  insufficient_data      0     5       -          -            -
+near_40_boundary  NORMAL       41.2  insufficient_data      0     5       -          -            -
+near_40_boundary  ELEVATED     41.2  insufficient_data      0     5       -          -            -
+near_40_boundary  NORMAL       38.6  insufficient_data      0     5       -          -            -
+near_40_boundary  ELEVATED     38.6  insufficient_data      0     5       -          -            -
+near_40_boundary  NORMAL       36.6  insufficient_data      0     5       -          -            -
+near_40_boundary  ELEVATED     36.6  insufficient_data      0     5       -          -            -
+near_80_boundary  NORMAL       78.5  insufficient_data      0     5       -          -            -
+near_80_boundary  ELEVATED     78.5  insufficient_data      0     5       -          -            -
+near_80_boundary  NORMAL       75.4  insufficient_data      0     5       -          -            -
+near_80_boundary  ELEVATED     75.4  insufficient_data      0     5       -          -            -
+near_80_boundary  NORMAL       79.3  insufficient_data      0     5       -          -            -
+near_80_boundary  ELEVATED     79.3  insufficient_data      0     5       -          -            -
+clear_block       NORMAL       99.5  insufficient_data      0     5       -          -            -
+clear_block       ELEVATED     99.5  insufficient_data      0     5       -          -            -
+clear_block       NORMAL       96.0  insufficient_data      0     5       -          -            -
+clear_block       ELEVATED     96.0  insufficient_data      0     5       -          -            -
+clear_block       NORMAL       99.2  insufficient_data      0     5       -          -            -
+clear_block       ELEVATED     99.2  insufficient_data      0     5       -          -            -
+
+Overall mean self-consistency rate (4 pairs with sufficient data): 1.0000
+Overall cross-agreement rate: 1.0000
+
+  band=clear_allow: mean self-consistency 1.0000 (4 pairs)
+  escalation=NORMAL: mean self-consistency 1.0000 (2 pairs)
+  escalation=ELEVATED: mean self-consistency 1.0000 (2 pairs)
+
+20 of 24 pairs had insufficient valid data (< 2 non-fallback responses) and are excluded from the aggregates above.

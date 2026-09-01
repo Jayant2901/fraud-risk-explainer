@@ -350,6 +350,7 @@ risk-manager/
 │   ├── graph_features.py        <- causal device/address graph features for cold-start entities
 │   ├── graph_features_ablation.py <- offline: cold-start recall before/after graph features (see below)
 │   ├── review_queue.py          <- human review queue + feedback-loop metrics (in-process + Redis)
+│   ├── consistency_analysis.py  <- offline: does this system agree with itself? (see below)
 │   └── llm_agent.py             <- Gemini (Google Gen AI API) agent, reasons over score + history
 ├── api/
 │   ├── main.py                  <- FastAPI JSON API wrapping the src/ modules
@@ -368,6 +369,7 @@ risk-manager/
 │   ├── test_escalation_ablation.py <- metric arithmetic (recall/false-flag-rate/precision)
 │   ├── test_drift_analysis.py    <- bucketing logic + metric arithmetic on synthetic series
 │   ├── test_review_queue.py      <- parametrized: in-process AND Redis (fakeredis)
+│   ├── test_consistency_analysis.py <- pure computation functions, MagicMock Gemini client
 │   └── test_llm_agent.py         <- mocked Gemini client
 ├── requirements.txt              <- pinned, runtime only
 ├── requirements-dev.txt          <- + pytest/fakeredis/etc, includes requirements.txt
@@ -384,6 +386,7 @@ risk-manager/
         ├── components/
         │   ├── LiveScoring.tsx (+ .test.tsx)
         │   ├── ReviewQueue.tsx (+ .test.tsx)
+        │   ├── ConsistencyAnalysis.tsx (+ .test.tsx)
         │   └── CostAnalysis.tsx (+ .test.tsx)
         ├── test/setup.ts
         └── App.tsx
@@ -676,6 +679,84 @@ specifically built for, by a small but positive amount — and the honest
 caveat is that a richer device signal (or a live deployment with better
 device-fingerprinting coverage than this anonymized public dataset
 provides) would likely move it further.
+
+## Does this system agree with itself? (and why this question, not another)
+
+Razorpay's own engineering blog names a specific, concrete pain point in
+their merchant risk review process: reviewing ~12,000 cases a month,
+~20 minutes each, and different analysts reaching different conclusions
+when looking at the identical case
+([Meet Bumblebee](https://engineering.razorpay.com/meet-bumblebee-the-multi-agent-ai-architecture-that-changed-fraud-detection-at-razorpay-c2b6d5704f51)).
+A related post describes the same system from the merchant's side —
+vague, inconsistent communication during review, reviewers losing
+context on handoff
+([Breaking the Risk Review Black Box](https://engineering.razorpay.com/our-obsession-with-merchant-experience-breaking-the-risk-review-black-box-7fa38d699ef1)).
+
+This project has no panel of human reviewers to test that with. It does
+have an LLM agent (`src/llm_agent.py`) that plays an equivalent role —
+it looks at a case and recommends an action, the way a human reviewer
+would — and unlike a human, it can cheaply be asked to look at the exact
+same case multiple times. `src/consistency_analysis.py` measures that
+directly, in two parts:
+
+**Part A — boundary fragility** (free, full test set, no API calls): of
+the 13,980 transactions the deterministic rules flag REVIEW/BLOCK,
+**1,433 (10.25%)** sit within ±2 points of a decision boundary (40 or
+80) — close calls where a couple of points of model noise could have
+gone the other way. This is the automated analog of "this case was
+genuinely ambiguous," measured cheaply across the entire test set.
+
+**Part B — LLM self-consistency and cross-agreement** (real Gemini API
+calls): a deliberate 12-transaction × 2-escalation-context sample (24
+pairs), calling `RiskExplainerAgent.explain()` 5 times per pair. Run it
+yourself with `python src/consistency_analysis.py` (needs a real
+`GEMINI_API_KEY`; it is a manual, occasional script, same as
+`train_model.py` — it does not run in CI). Output is saved to
+`models/consistency_report.json` (consumed by `GET
+/api/consistency-analysis` and the Consistency tab in the frontend) and
+`models/consistency_report.txt`.
+
+**Real result, and a real surprise along the way:** running this for
+real surfaced something worth reporting on its own — Gemini's free tier
+for `gemini-3.6-flash` turned out to enforce a **20-requests-PER-DAY**
+quota (`GenerateRequestsPerDayPerProjectPerModel-FreeTier`), not the
+per-minute rate limit a free tier more commonly implies. The first 20
+calls (4 of the 24 pairs — both escalation contexts for the first 2
+sampled `clear_allow` transactions) went through; every call after that
+hit `429 RESOURCE_EXHAUSTED` for the rest of the day. The fallback-
+detection logic did exactly its job here: those 20 exhausted pairs are
+correctly reported as `insufficient_data` (0 valid responses each,
+excluded from every aggregate), not silently counted as disagreement —
+which is the entire point of `is_fallback_response()` and the
+`MIN_VALID_RESPONSES` guard.
+
+Of the 4 pairs that did get real data:
+
+| Band | Escalation | Risk score | Modal action | Self-consistency | Cross-agreement |
+|---|---|---|---|---|---|
+| clear_allow | NORMAL | 0.1 | ALLOW | 100% | yes |
+| clear_allow | ELEVATED | 0.1 | REVIEW | 100% | yes |
+| clear_allow | NORMAL | 12.6 | ALLOW | 100% | yes |
+| clear_allow | ELEVATED | 12.6 | REVIEW | 100% | yes |
+
+**Honest read, on two levels.** On the question this phase actually set
+out to answer: within the one band that got real data, the LLM agent
+was perfectly self-consistent (100% across all 5 repeated calls, every
+time) and perfectly aligned with the deterministic rules — including
+correctly reasoning that an `ELEVATED` escalation state should push a
+low raw score from ALLOW to REVIEW, exactly as the system prompt asks.
+That's a genuine, if narrow, positive finding: it should not be spun as
+"proof the model never disagrees with itself" (the interesting
+hypothesis from the original design — that boundary cases and
+`ELEVATED` escalation would show *more* self-disagreement — was never
+actually tested, since the near-40, near-80, and clear-BLOCK bands got
+zero real API data before the quota ran out). On the question of
+whether this whole approach is practically deployable on a free tier:
+**no, not at this design's scale** — a 20-calls/day cap means the full
+24-pair × 5-call design would take roughly six separate days to
+complete on the free tier alone, which is itself a legitimate, useful
+finding for anyone considering this architecture for a real consistency-
+monitoring pipeline, not a footnote to apologize for.
 
 ## Methodology notes (for the writeup / judges)
 

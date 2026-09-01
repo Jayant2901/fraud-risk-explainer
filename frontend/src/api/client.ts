@@ -108,6 +108,37 @@ export interface DriftAnalysisResult {
   message: string | null;
 }
 
+export interface BoundaryFragility {
+  n_flagged: number;
+  n_near_boundary: number;
+  fraction_near_boundary: number;
+}
+
+export interface ConsistencyPair {
+  status: "ok" | "insufficient_data";
+  n_calls: number;
+  n_excluded_fallback: number;
+  n_valid: number;
+  modal_action: "ALLOW" | "REVIEW" | "BLOCK" | null;
+  self_consistency_rate: number | null;
+  cross_agreement: boolean | null;
+  band: string;
+  row_index: number;
+  risk_score: number;
+  escalation_context: "NORMAL" | "ELEVATED";
+  deterministic_action: "ALLOW" | "REVIEW" | "BLOCK";
+}
+
+export interface ConsistencyAnalysis {
+  part_a_boundary_fragility: BoundaryFragility;
+  part_b_pairs: ConsistencyPair[];
+}
+
+export interface ConsistencyAnalysisResult {
+  consistency: ConsistencyAnalysis | null;
+  message: string | null;
+}
+
 export interface ReviewQueueMetrics {
   total_disposed: number;
   overall_precision: number | null;
@@ -179,4 +210,5 @@ export const api = {
     }),
   reviewQueueMetrics: () => request<ReviewQueueMetrics>("/review-queue/metrics"),
   driftAnalysis: () => request<DriftAnalysisResult>("/drift-analysis"),
+  consistencyAnalysis: () => request<ConsistencyAnalysisResult>("/consistency-analysis"),
 };
