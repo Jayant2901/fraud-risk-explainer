@@ -70,10 +70,14 @@ def client(monkeypatch, sample_df):
     monkeypatch.setattr(main, "get_agent", lambda: FakeAgent())
 
     # Module-level singletons persist across tests otherwise (escalation
-    # history, idempotency cache, pending explanations) — reset for isolation.
+    # history, idempotency cache, pending explanations, and the rate
+    # limiter's request counts — all tests share TEST_API_KEY, so without
+    # this every test's /api/score calls would count against the SAME
+    # 30/minute bucket and tests could start flakily 429ing each other).
     main._memory.reset()
-    main._explanations.clear()
+    main._explanations_cache.clear()
     main._idempotency_cache.clear()
+    main.limiter._storage.reset()
 
     from fastapi.testclient import TestClient
 

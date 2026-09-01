@@ -1,16 +1,21 @@
-kagglehub
-pandas
-numpy
-scikit-learn
-xgboost
-shap
-fastapi
-uvicorn[standard]
-google-genai
-pydantic
-joblib
+kagglehub==1.0.2
+pandas==3.0.3
+numpy==2.5.1
+scikit-learn==1.9.0
+xgboost==3.4.1
+shap==0.52.0
+fastapi==0.141.1
+uvicorn[standard]==0.51.0
+google-genai==2.20.0
+pydantic==2.13.5
+joblib==1.5.3
 
-# Testing
-pytest
-pytest-cov
-httpx
+# Rate limiting (POST /api/score)
+slowapi==0.1.10
+
+# Redis-backed entity memory / idempotency / explanation cache — optional
+# at runtime (falls back to in-process state when REDIS_URL is unset),
+# but the client library itself is a hard dependency either way.
+redis==8.1.0
+
+# requirements-dev.txt has test-only dependencies (pytest, fakeredis, ...)

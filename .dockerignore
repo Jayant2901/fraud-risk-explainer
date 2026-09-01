@@ -1,0 +1,20 @@
+# Backend build context (this file applies to the root Dockerfile).
+# frontend/ has its own .dockerignore for its own build context.
+data/
+models/
+frontend/
+tests/
+.git/
+.github/
+__pycache__/
+**/__pycache__/
+*.pyc
+.pytest_cache/
+.coverage
+htmlcov/
+.venv/
+venv/
+.vscode/
+.claude/
+.env
+.env.local

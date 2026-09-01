@@ -1,0 +1,51 @@
+# Full stack for local/demo use. Requires models/ already populated
+# (`python src/train_model.py`) and a .env file at the repo root (copy
+# from .env.example) providing API_KEY and GEMINI_API_KEY — compose
+# reads .env automatically for the ${VAR} substitutions below.
+#
+#   docker compose up --build
+#
+# Backend: http://localhost:8000  Frontend: http://localhost:5173
+services:
+  redis:
+    image: redis:7-alpine
+    ports:
+      - "6379:6379"
+    volumes:
+      - redis-data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+
+  backend:
+    build: .
+    ports:
+      - "8000:8000"
+    environment:
+      API_KEY: ${API_KEY:?API_KEY must be set in .env}
+      GEMINI_API_KEY: ${GEMINI_API_KEY:-}
+      CORS_ORIGINS: ${CORS_ORIGINS:-http://localhost:5173}
+      REDIS_URL: redis://redis:6379/0
+    volumes:
+      - ./models:/app/models
+      - ./data:/app/data
+    depends_on:
+      redis:
+        condition: service_healthy
+
+  frontend:
+    build:
+      context: ./frontend
+      args:
+        # Build-time only — see frontend/Dockerfile's comment on why this
+        # can't be a runtime `environment:` entry instead.
+        VITE_API_KEY: ${API_KEY:?API_KEY must be set in .env}
+    ports:
+      - "5173:80"
+    depends_on:
+      - backend
+
+volumes:
+  redis-data:

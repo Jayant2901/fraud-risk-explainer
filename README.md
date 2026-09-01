@@ -69,6 +69,25 @@ solving a real gap in that standard approach:
    transaction twice and double-count it in the entity's escalation
    history, incorrectly pushing them toward `WATCH`/`ELEVATED`.
 
+6. **Optional Redis-backed state, same behavior either way.** Entity
+   escalation history, the idempotency cache, and pending/ready
+   explanations all live in-process by default (session-scoped, zero
+   setup — the right default for local dev/demo). Set `REDIS_URL` and
+   the exact same classes (`RedisEntityRiskMemory`, `KeyedCache` in
+   `src/entity_memory.py` / `src/redis_utils.py`) back the same state
+   with Redis instead — surviving restarts and shareable across
+   workers — with no behavior change for the caller. `tests/` runs the
+   *same* test suite against both backends (via a parametrized fixture,
+   not separate test files) to prove they actually agree, not just that
+   each one individually "works."
+
+7. **Rate limiting on the expensive endpoint.** `POST /api/score` is
+   capped at 30 requests/minute per caller (`X-API-Key` if present,
+   else source IP) via `slowapi` — a fraud-scoring endpoint that calls
+   an ML model and (asynchronously) an LLM shouldn't be able to be
+   hammered with no limit. Cheap read routes (`/api/entities`, etc.)
+   are deliberately not subject to this budget.
+
 ## A note on the dataset and the entity fingerprint
 
 IEEE-CIS is a genuinely anonymized dataset — it deliberately does not
@@ -84,8 +103,12 @@ real Razorpay data, you'd use the actual merchant/account ID directly.
 ## Setup
 
 ```bash
-pip install -r requirements.txt
+pip install -r requirements.txt        # runtime only
+pip install -r requirements-dev.txt    # + pytest, fakeredis, etc. — includes requirements.txt
 ```
+
+Both files are pinned to exact versions (`pip freeze`-style, hand-trimmed
+to what's actually imported) for reproducible installs.
 
 ### 1. Get the data
 
@@ -200,6 +223,28 @@ below it fills in a moment later once the background LLM call finishes
 adjust the fraud-loss/false-positive-cost assumptions to see how the
 optimal threshold shifts.
 
+### Docker (alternative to steps 4-5)
+
+Runs the backend, frontend, and Redis together — requires `models/`
+already populated (step 3) and `.env` set up (step 2):
+
+```bash
+docker compose up --build
+```
+
+Backend: `http://localhost:8000` · Frontend: `http://localhost:5173`
+(nginx, reverse-proxying `/api/*` to the backend container — see
+`frontend/nginx.conf`). Redis is wired in automatically
+(`REDIS_URL=redis://redis:6379/0`), so entity escalation state and the
+idempotency cache survive `docker compose restart backend`.
+
+One gotcha specific to the frontend image: `VITE_API_KEY` has to be a
+**build** arg, not a container `environment:` entry — Vite bakes
+`import.meta.env.VITE_*` into the static JS bundle at `npm run build`
+time, before the container ever runs (see `frontend/Dockerfile`'s
+comment). `docker-compose.yml` already wires this correctly via
+`build.args`; it's only a trap if you build the frontend image by hand.
+
 ### Running tests
 
 ```bash
@@ -207,15 +252,25 @@ pytest                                    # run everything
 pytest --cov=src --cov=api --cov-report=term-missing   # with coverage
 ```
 
-Runs clean with **no trained model, no Kaggle dataset, no `API_KEY`, and
-no `GEMINI_API_KEY`** — every module's tests either exercise pure logic
-directly or fake out the one thing that needs real credentials/data
-(`tests/conftest.py`'s `client` fixture fakes `get_sample_data`,
-`get_explainer`, and `get_agent`; `test_llm_agent.py` mocks the Gemini
-client itself).
+Runs clean with **no trained model, no Kaggle dataset, no `API_KEY`, no
+`GEMINI_API_KEY`, and no real Redis** — every module's tests either
+exercise pure logic directly or fake out the one thing that needs real
+credentials/data/infra (`tests/conftest.py`'s `client` fixture fakes
+`get_sample_data`, `get_explainer`, and `get_agent`; `test_llm_agent.py`
+mocks the Gemini client; `test_entity_memory.py` and `test_keyed_cache.py`
+use `fakeredis` for the Redis-backed paths).
 
 - `test_entity_memory.py` — WATCH/ELEVATED threshold crossing, the
-  rolling-window eviction, single-vs-all `reset()`.
+  rolling-window eviction, single-vs-all `reset()` — **parametrized to
+  run the identical suite against both `EntityRiskMemory` (in-process)
+  and `RedisEntityRiskMemory` (fakeredis)**, proving they actually agree
+  rather than each just passing its own tests.
+- `test_keyed_cache.py` — same parametrized-against-both-backends
+  approach, for the cache class the idempotency store and explanation
+  store are both built on.
+- `test_rate_limit.py` — fires 31 requests at `/api/score` in a loop and
+  asserts the 31st gets 429; confirms other routes aren't subject to
+  the same budget.
 - `test_cost_analysis.py` — a hand-computable fraud/legit example, so
   `cost_curve`'s fn/fp/tp counts and `optimal_threshold`'s savings math
   are checked against numbers worked out by hand, not just "doesn't crash."
@@ -250,20 +305,31 @@ risk-manager/
 │   ├── cost_analysis.py         <- threshold -> business cost curve
 │   ├── train_model.py           <- trains XGBoost, picks cost-optimal threshold
 │   ├── risk_explainer.py        <- SHAP wrapper: score -> top factors
-│   ├── entity_memory.py         <- rolling verdict history -> escalation state
+│   ├── entity_memory.py         <- rolling verdict history -> escalation state (in-process + Redis)
+│   ├── redis_utils.py           <- optional-Redis client factory + KeyedCache (idempotency/explanations)
 │   └── llm_agent.py             <- Gemini (Google Gen AI API) agent, reasons over score + history
 ├── api/
 │   └── main.py                  <- FastAPI JSON API wrapping the src/ modules
 ├── tests/
 │   ├── conftest.py               <- shared fixtures: fake data/model/agent, FastAPI TestClient
-│   ├── test_entity_memory.py
+│   ├── test_entity_memory.py     <- parametrized: in-process AND Redis (fakeredis)
+│   ├── test_keyed_cache.py       <- parametrized: in-process AND Redis (fakeredis)
 │   ├── test_cost_analysis.py
 │   ├── test_data_utils.py        <- includes the leakage-prevention regression test
 │   ├── test_risk_explainer.py
 │   ├── test_api.py               <- routes, idempotency, decide_action
 │   ├── test_api_auth.py          <- API_KEY auth, fail-closed behavior
+│   ├── test_rate_limit.py        <- 30/minute on /api/score
 │   └── test_llm_agent.py         <- mocked Gemini client
+├── requirements.txt              <- pinned, runtime only
+├── requirements-dev.txt          <- + pytest/fakeredis/etc, includes requirements.txt
+├── Dockerfile                    <- backend image
+├── docker-compose.yml            <- backend + frontend + redis
+├── .dockerignore
+├── .github/workflows/ci.yml      <- pytest --cov (backend) + lint/build (frontend), on every push/PR
 └── frontend/                    <- React + TypeScript + Tailwind SPA
+    ├── Dockerfile                <- multi-stage: node build -> nginx
+    ├── nginx.conf                <- serves the SPA, proxies /api/* to the backend container
     └── src/
         ├── api/client.ts        <- typed fetch client for the backend
         ├── components/
@@ -284,8 +350,9 @@ risk-manager/
   is used for fields like `ProductCD`, `card4`, `card6`,
   `P_emaildomain` rather than manual one-hot encoding — simpler and
   handles missingness natively, which this dataset has a lot of.
-- **What I'd build next** given more time: persist entity memory in
-  Redis instead of in-process memory (so it survives restarts and
-  scales across workers), extend the entity fingerprint with device/IP
-  graph features for fraud-ring detection, and replace the fixed
-  cost constants with ones pulled from real ops data.
+- **What I'd build next** given more time: extend the entity fingerprint
+  with device/IP graph features for fraud-ring detection, and replace
+  the fixed cost constants with ones pulled from real ops data.
+  (Persisting entity memory in Redis so it survives restarts and scales
+  across workers — previously listed here — is done; see point 6 above
+  and `src/entity_memory.py`.)

@@ -1,9 +1,30 @@
-from entity_memory import EntityRiskMemory, WATCH_THRESHOLD, ELEVATED_THRESHOLD, WINDOW_SIZE
+"""
+Every test class below runs TWICE — once against EntityRiskMemory
+(in-process deque) and once against RedisEntityRiskMemory (backed by
+fakeredis) — via the memory_factory fixture's parametrization. This is
+what actually proves the two implementations are behaviorally
+equivalent, not just "both pass their own separate tests."
+"""
+import fakeredis
+import pytest
+
+from entity_memory import EntityRiskMemory, RedisEntityRiskMemory, WATCH_THRESHOLD, ELEVATED_THRESHOLD, WINDOW_SIZE
+
+
+@pytest.fixture(params=["in_process", "redis"])
+def memory_factory(request):
+    """Returns a callable(window_size=WINDOW_SIZE) -> memory instance,
+    for the backend named by this fixture's current param."""
+    if request.param == "in_process":
+        return lambda window_size=WINDOW_SIZE: EntityRiskMemory(window_size=window_size)
+
+    client = fakeredis.FakeRedis(decode_responses=True)
+    return lambda window_size=WINDOW_SIZE: RedisEntityRiskMemory(client, window_size=window_size)
 
 
 class TestEmptyHistory:
-    def test_unknown_entity_defaults_to_normal(self):
-        memory = EntityRiskMemory()
+    def test_unknown_entity_defaults_to_normal(self, memory_factory):
+        memory = memory_factory()
         state = memory.get_escalation_state("never-seen")
         assert state["state"] == "NORMAL"
         assert state["recent_verdict_count"] == 0
@@ -13,32 +34,32 @@ class TestEmptyHistory:
 
 
 class TestThresholdCrossing:
-    def test_below_watch_threshold_stays_normal(self):
-        memory = EntityRiskMemory()
+    def test_below_watch_threshold_stays_normal(self, memory_factory):
+        memory = memory_factory()
         for _ in range(WATCH_THRESHOLD - 1):
             memory.record_verdict("e1", "REVIEW", 50.0)
         assert memory.get_escalation_state("e1")["state"] == "NORMAL"
 
-    def test_reaching_watch_threshold_crosses_to_watch(self):
-        memory = EntityRiskMemory()
+    def test_reaching_watch_threshold_crosses_to_watch(self, memory_factory):
+        memory = memory_factory()
         for _ in range(WATCH_THRESHOLD):
             memory.record_verdict("e1", "REVIEW", 50.0)
         assert memory.get_escalation_state("e1")["state"] == "WATCH"
 
-    def test_below_elevated_threshold_stays_watch(self):
-        memory = EntityRiskMemory()
+    def test_below_elevated_threshold_stays_watch(self, memory_factory):
+        memory = memory_factory()
         for _ in range(ELEVATED_THRESHOLD - 1):
             memory.record_verdict("e1", "BLOCK", 90.0)
         assert memory.get_escalation_state("e1")["state"] == "WATCH"
 
-    def test_reaching_elevated_threshold_crosses_to_elevated(self):
-        memory = EntityRiskMemory()
+    def test_reaching_elevated_threshold_crosses_to_elevated(self, memory_factory):
+        memory = memory_factory()
         for _ in range(ELEVATED_THRESHOLD):
             memory.record_verdict("e1", "BLOCK", 90.0)
         assert memory.get_escalation_state("e1")["state"] == "ELEVATED"
 
-    def test_allow_verdicts_never_count_as_risky(self):
-        memory = EntityRiskMemory()
+    def test_allow_verdicts_never_count_as_risky(self, memory_factory):
+        memory = memory_factory()
         for _ in range(WINDOW_SIZE):
             memory.record_verdict("e1", "ALLOW", 5.0)
         state = memory.get_escalation_state("e1")
@@ -47,8 +68,8 @@ class TestThresholdCrossing:
 
 
 class TestWindowEviction:
-    def test_window_evicts_oldest_verdict_beyond_window_size(self):
-        memory = EntityRiskMemory(window_size=3)
+    def test_window_evicts_oldest_verdict_beyond_window_size(self, memory_factory):
+        memory = memory_factory(window_size=3)
         memory.record_verdict("e1", "BLOCK", 90.0)   # will be evicted
         memory.record_verdict("e1", "ALLOW", 5.0)
         memory.record_verdict("e1", "ALLOW", 5.0)
@@ -59,8 +80,8 @@ class TestWindowEviction:
         assert state["recent_risky_count"] == 0  # the one BLOCK aged out
         assert state["recent_verdicts"] == ["ALLOW", "ALLOW", "ALLOW"]
 
-    def test_elevated_state_can_recover_as_risky_verdicts_age_out(self):
-        memory = EntityRiskMemory(window_size=ELEVATED_THRESHOLD)
+    def test_elevated_state_can_recover_as_risky_verdicts_age_out(self, memory_factory):
+        memory = memory_factory(window_size=ELEVATED_THRESHOLD)
         for _ in range(ELEVATED_THRESHOLD):
             memory.record_verdict("e1", "BLOCK", 90.0)
         assert memory.get_escalation_state("e1")["state"] == "ELEVATED"
@@ -72,8 +93,8 @@ class TestWindowEviction:
 
 
 class TestReset:
-    def test_reset_single_entity_leaves_others_untouched(self):
-        memory = EntityRiskMemory()
+    def test_reset_single_entity_leaves_others_untouched(self, memory_factory):
+        memory = memory_factory()
         memory.record_verdict("e1", "BLOCK", 90.0)
         memory.record_verdict("e2", "BLOCK", 90.0)
 
@@ -82,8 +103,8 @@ class TestReset:
         assert memory.get_escalation_state("e1")["recent_verdict_count"] == 0
         assert memory.get_escalation_state("e2")["recent_verdict_count"] == 1
 
-    def test_reset_none_clears_every_entity(self):
-        memory = EntityRiskMemory()
+    def test_reset_none_clears_every_entity(self, memory_factory):
+        memory = memory_factory()
         memory.record_verdict("e1", "BLOCK", 90.0)
         memory.record_verdict("e2", "BLOCK", 90.0)
 
@@ -92,18 +113,49 @@ class TestReset:
         assert memory.get_escalation_state("e1")["recent_verdict_count"] == 0
         assert memory.get_escalation_state("e2")["recent_verdict_count"] == 0
 
-    def test_reset_unknown_entity_is_a_no_op(self):
-        memory = EntityRiskMemory()
+    def test_reset_unknown_entity_is_a_no_op(self, memory_factory):
+        memory = memory_factory()
         memory.record_verdict("e1", "BLOCK", 90.0)
         memory.reset("never-seen")  # must not raise
         assert memory.get_escalation_state("e1")["recent_verdict_count"] == 1
 
 
 class TestAvgRecentRiskScore:
-    def test_average_is_rounded_to_one_decimal(self):
-        memory = EntityRiskMemory()
+    def test_average_is_rounded_to_one_decimal(self, memory_factory):
+        memory = memory_factory()
         memory.record_verdict("e1", "ALLOW", 10.0)
         memory.record_verdict("e1", "ALLOW", 11.0)
         memory.record_verdict("e1", "ALLOW", 11.0)
         # mean = 10.666... -> rounds to 10.7
         assert memory.get_escalation_state("e1")["avg_recent_risk_score"] == 10.7
+
+
+class TestRedisSpecific:
+    """Behavior that only makes sense to assert for the Redis backend
+    directly (not parametrized — EntityRiskMemory has no TTL/key-prefix
+    concept to compare against)."""
+
+    def test_uses_a_namespaced_key_per_entity(self):
+        client = fakeredis.FakeRedis(decode_responses=True)
+        memory = RedisEntityRiskMemory(client)
+        memory.record_verdict("some-entity", "BLOCK", 90.0)
+        assert client.exists("riskmgr:entity_history:some-entity")
+
+    def test_sets_a_ttl_on_write(self):
+        client = fakeredis.FakeRedis(decode_responses=True)
+        memory = RedisEntityRiskMemory(client)
+        memory.record_verdict("some-entity", "BLOCK", 90.0)
+        ttl = client.ttl("riskmgr:entity_history:some-entity")
+        assert ttl > 0
+
+    def test_reset_none_only_touches_this_projects_keys(self):
+        # reset(None) must not be a FLUSHALL — it should only delete keys
+        # under this module's own prefix, leaving unrelated keys alone.
+        client = fakeredis.FakeRedis(decode_responses=True)
+        client.set("some_other_apps_key", "do-not-touch")
+
+        memory = RedisEntityRiskMemory(client)
+        memory.record_verdict("e1", "BLOCK", 90.0)
+        memory.reset(None)
+
+        assert client.get("some_other_apps_key") == "do-not-touch"
