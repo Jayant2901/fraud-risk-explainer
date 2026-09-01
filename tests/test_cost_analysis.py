@@ -8,13 +8,21 @@ crashing."
 """
 import pytest
 
-from cost_analysis import cost_curve, optimal_threshold
+from cost_analysis import cost_curve, optimal_threshold, threshold_sensitivity
 
 Y_TRUE = [1, 1, 0, 0]
 Y_PROBA = [0.9, 0.4, 0.3, 0.1]
 THRESHOLDS = [0.2, 0.35, 0.5, 0.95]
 AVG_FRAUD_LOSS = 5000.0
 AVG_FP_COST = 150.0
+
+# An imperfect-model fixture (the fraud row scores LOWER than the legit
+# row, so no threshold separates the classes cleanly) — needed to make
+# the optimal threshold actually move with the cost ratio, which
+# Y_TRUE/Y_PROBA above doesn't do (0.35 is a free zero-cost threshold
+# there regardless of costs, so it never budges).
+SENS_Y_TRUE = [1, 0]
+SENS_Y_PROBA = [0.3, 0.6]
 
 
 class TestCostCurve:
@@ -107,3 +115,81 @@ class TestOptimalThreshold:
         result = optimal_threshold(y_true, y_proba)
         assert result["default_threshold_cost"] == 0.0
         assert result["estimated_savings_pct"] == 0.0
+
+
+class TestThresholdSensitivity:
+    def test_grid_shape_and_values_match_the_requested_multipliers(self):
+        result = threshold_sensitivity(
+            Y_TRUE, Y_PROBA,
+            fraud_loss_multipliers=[1.0, 2.0],
+            fp_cost_multipliers=[0.5],
+            base_fraud_loss=AVG_FRAUD_LOSS,
+            base_fp_cost=AVG_FP_COST,
+        )
+
+        assert result["base_fraud_loss"] == AVG_FRAUD_LOSS
+        assert result["base_fp_cost"] == AVG_FP_COST
+        assert len(result["grid"]) == 2  # 2 fraud-loss mults x 1 fp-cost mult
+
+        cell = result["grid"][0]
+        assert cell["fraud_loss_multiplier"] == 1.0
+        assert cell["fp_cost_multiplier"] == 0.5
+        assert cell["avg_fraud_loss"] == AVG_FRAUD_LOSS
+        assert cell["avg_fp_cost"] == AVG_FP_COST * 0.5
+
+    def test_each_grid_cell_matches_optimal_threshold_computed_directly(self):
+        # Each cell in the grid must be exactly what optimal_threshold()
+        # itself would return for that multiplied cost pair — the sweep
+        # shouldn't introduce any arithmetic of its own.
+        result = threshold_sensitivity(
+            Y_TRUE, Y_PROBA,
+            fraud_loss_multipliers=[2.0],
+            fp_cost_multipliers=[0.5],
+            base_fraud_loss=AVG_FRAUD_LOSS,
+            base_fp_cost=AVG_FP_COST,
+        )
+        cell = result["grid"][0]
+
+        expected = optimal_threshold(
+            Y_TRUE, Y_PROBA,
+            avg_fraud_loss=AVG_FRAUD_LOSS * 2.0,
+            avg_fp_cost=AVG_FP_COST * 0.5,
+        )
+
+        assert cell["optimal_threshold"] == expected["optimal_threshold"]
+        assert cell["optimal_total_cost"] == expected["optimal_total_cost"]
+        assert cell["estimated_savings_pct"] == expected["estimated_savings_pct"]
+
+    def test_default_multipliers_produce_a_4x4_grid(self):
+        result = threshold_sensitivity(Y_TRUE, Y_PROBA)
+        assert len(result["fraud_loss_multipliers"]) == 4
+        assert len(result["fp_cost_multipliers"]) == 4
+        assert len(result["grid"]) == 16
+
+    def test_optimal_threshold_actually_shifts_with_the_cost_ratio(self):
+        # Hand-computable on SENS_Y_TRUE/SENS_Y_PROBA = ([1, 0], [0.3, 0.6]):
+        # at threshold t, predictions are [1,1] for t<=0.3 (cost=fp_cost),
+        # [0,1] for 0.3<t<=0.6 (cost=fraud_loss+fp_cost, always worse),
+        # [0,0] for t>0.6 (cost=fraud_loss). So the optimum is whichever
+        # of "flag everything" or "flag nothing" is cheaper — it must
+        # flip as fraud_loss grows relative to fp_cost.
+        cheap_fraud = threshold_sensitivity(
+            SENS_Y_TRUE, SENS_Y_PROBA,
+            fraud_loss_multipliers=[1.0], fp_cost_multipliers=[1.0],
+            base_fraud_loss=100.0, base_fp_cost=150.0,
+        )["grid"][0]
+        expensive_fraud = threshold_sensitivity(
+            SENS_Y_TRUE, SENS_Y_PROBA,
+            fraud_loss_multipliers=[50.0], fp_cost_multipliers=[1.0],
+            base_fraud_loss=100.0, base_fp_cost=150.0,
+        )["grid"][0]
+
+        # fraud_loss (100) < fp_cost (150) -> cheaper to let the fraud
+        # through than to flag the legit row -> high threshold.
+        assert cheap_fraud["optimal_threshold"] > 0.6
+        assert cheap_fraud["optimal_total_cost"] == pytest.approx(100.0)
+
+        # fraud_loss (5000) >> fp_cost (150) -> cheaper to flag
+        # everything than to miss the fraud -> low threshold.
+        assert expensive_fraud["optimal_threshold"] <= 0.3
+        assert expensive_fraud["optimal_total_cost"] == pytest.approx(150.0)

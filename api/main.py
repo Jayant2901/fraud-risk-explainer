@@ -24,6 +24,7 @@ Requires:
 POST /api/score is rate-limited to 30/minute per caller (X-API-Key if
 present, else source IP) — see the `limiter` set up below.
 """
+import json
 import logging
 import os
 import sys
@@ -134,6 +135,7 @@ router = APIRouter(dependencies=[Depends(verify_api_key)])
 
 EVAL_REPORT_PATH = "models/eval_report.txt"
 ESCALATION_ABLATION_REPORT_PATH = "models/escalation_ablation_report.txt"
+COST_SENSITIVITY_REPORT_PATH = "models/cost_sensitivity_report.json"
 
 # --- Singletons (model, explainer, agent, entity memory) ---------------
 # REDIS_URL is read once here, at process startup — same as any other
@@ -349,6 +351,17 @@ def get_cost_analysis(
         },
         "params": {"fraud_loss": fraud_loss, "fp_cost": fp_cost},
     }
+
+
+@router.get("/api/cost-analysis/sensitivity")
+def get_cost_sensitivity():
+    if not os.path.exists(COST_SENSITIVITY_REPORT_PATH):
+        return {
+            "sensitivity": None,
+            "message": "No sensitivity sweep yet — run `python src/cost_sensitivity.py` to generate one.",
+        }
+    with open(COST_SENSITIVITY_REPORT_PATH) as f:
+        return {"sensitivity": json.load(f), "message": None}
 
 
 @router.get("/api/escalation-ablation")

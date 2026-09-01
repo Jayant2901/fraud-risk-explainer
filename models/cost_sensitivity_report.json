@@ -1,0 +1,162 @@
+{
+  "base_fraud_loss": 5000.0,
+  "base_fp_cost": 150.0,
+  "fraud_loss_multipliers": [
+    0.5,
+    1.0,
+    1.5,
+    2.0
+  ],
+  "fp_cost_multipliers": [
+    0.5,
+    1.0,
+    1.5,
+    2.0
+  ],
+  "grid": [
+    {
+      "fraud_loss_multiplier": 0.5,
+      "fp_cost_multiplier": 0.5,
+      "avg_fraud_loss": 2500.0,
+      "avg_fp_cost": 75.0,
+      "optimal_threshold": 0.33,
+      "optimal_total_cost": 2179950.0,
+      "estimated_savings_pct": 9.4
+    },
+    {
+      "fraud_loss_multiplier": 0.5,
+      "fp_cost_multiplier": 1.0,
+      "avg_fraud_loss": 2500.0,
+      "avg_fp_cost": 150.0,
+      "optimal_threshold": 0.48,
+      "optimal_total_cost": 2936800.0,
+      "estimated_savings_pct": 0.5
+    },
+    {
+      "fraud_loss_multiplier": 0.5,
+      "fp_cost_multiplier": 1.5,
+      "avg_fraud_loss": 2500.0,
+      "avg_fp_cost": 225.0,
+      "optimal_threshold": 0.56,
+      "optimal_total_cost": 3381625.0,
+      "estimated_savings_pct": 3.3
+    },
+    {
+      "fraud_loss_multiplier": 0.5,
+      "fp_cost_multiplier": 2.0,
+      "avg_fraud_loss": 2500.0,
+      "avg_fp_cost": 300.0,
+      "optimal_threshold": 0.63,
+      "optimal_total_cost": 3768400.0,
+      "estimated_savings_pct": 6.8
+    },
+    {
+      "fraud_loss_multiplier": 1.0,
+      "fp_cost_multiplier": 0.5,
+      "avg_fraud_loss": 5000.0,
+      "avg_fp_cost": 75.0,
+      "optimal_threshold": 0.22,
+      "optimal_total_cost": 3076375.0,
+      "estimated_savings_pct": 27.9
+    },
+    {
+      "fraud_loss_multiplier": 1.0,
+      "fp_cost_multiplier": 1.0,
+      "avg_fraud_loss": 5000.0,
+      "avg_fp_cost": 150.0,
+      "optimal_threshold": 0.33,
+      "optimal_total_cost": 4359900.0,
+      "estimated_savings_pct": 9.4
+    },
+    {
+      "fraud_loss_multiplier": 1.0,
+      "fp_cost_multiplier": 1.5,
+      "avg_fraud_loss": 5000.0,
+      "avg_fp_cost": 225.0,
+      "optimal_threshold": 0.42,
+      "optimal_total_cost": 5274250.0,
+      "estimated_savings_pct": 1.6
+    },
+    {
+      "fraud_loss_multiplier": 1.0,
+      "fp_cost_multiplier": 2.0,
+      "avg_fraud_loss": 5000.0,
+      "avg_fp_cost": 300.0,
+      "optimal_threshold": 0.48,
+      "optimal_total_cost": 5873600.0,
+      "estimated_savings_pct": 0.5
+    },
+    {
+      "fraud_loss_multiplier": 1.5,
+      "fp_cost_multiplier": 0.5,
+      "avg_fraud_loss": 7500.0,
+      "avg_fp_cost": 75.0,
+      "optimal_threshold": 0.2,
+      "optimal_total_cost": 3698475.0,
+      "estimated_savings_pct": 39.6
+    },
+    {
+      "fraud_loss_multiplier": 1.5,
+      "fp_cost_multiplier": 1.0,
+      "avg_fraud_loss": 7500.0,
+      "avg_fp_cost": 150.0,
+      "optimal_threshold": 0.28,
+      "optimal_total_cost": 5338050.0,
+      "estimated_savings_pct": 20.0
+    },
+    {
+      "fraud_loss_multiplier": 1.5,
+      "fp_cost_multiplier": 1.5,
+      "avg_fraud_loss": 7500.0,
+      "avg_fp_cost": 225.0,
+      "optimal_threshold": 0.33,
+      "optimal_total_cost": 6539850.0,
+      "estimated_savings_pct": 9.4
+    },
+    {
+      "fraud_loss_multiplier": 1.5,
+      "fp_cost_multiplier": 2.0,
+      "avg_fraud_loss": 7500.0,
+      "avg_fp_cost": 300.0,
+      "optimal_threshold": 0.42,
+      "optimal_total_cost": 7546500.0,
+      "estimated_savings_pct": 2.8
+    },
+    {
+      "fraud_loss_multiplier": 2.0,
+      "fp_cost_multiplier": 0.5,
+      "avg_fraud_loss": 10000.0,
+      "avg_fp_cost": 75.0,
+      "optimal_threshold": 0.16,
+      "optimal_total_cost": 4227575.0,
+      "estimated_savings_pct": 47.1
+    },
+    {
+      "fraud_loss_multiplier": 2.0,
+      "fp_cost_multiplier": 1.0,
+      "avg_fraud_loss": 10000.0,
+      "avg_fp_cost": 150.0,
+      "optimal_threshold": 0.22,
+      "optimal_total_cost": 6152750.0,
+      "estimated_savings_pct": 27.9
+    },
+    {
+      "fraud_loss_multiplier": 2.0,
+      "fp_cost_multiplier": 1.5,
+      "avg_fraud_loss": 10000.0,
+      "avg_fp_cost": 225.0,
+      "optimal_threshold": 0.28,
+      "optimal_total_cost": 7545825.0,
+      "estimated_savings_pct": 16.9
+    },
+    {
+      "fraud_loss_multiplier": 2.0,
+      "fp_cost_multiplier": 2.0,
+      "avg_fraud_loss": 10000.0,
+      "avg_fp_cost": 300.0,
+      "optimal_threshold": 0.33,
+      "optimal_total_cost": 8719800.0,
+      "estimated_savings_pct": 9.4
+    }
+  ]
+}

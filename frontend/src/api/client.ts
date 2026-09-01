@@ -52,6 +52,29 @@ export interface CostAnalysis {
   params: { fraud_loss: number; fp_cost: number };
 }
 
+export interface CostSensitivityCell {
+  fraud_loss_multiplier: number;
+  fp_cost_multiplier: number;
+  avg_fraud_loss: number;
+  avg_fp_cost: number;
+  optimal_threshold: number;
+  optimal_total_cost: number;
+  estimated_savings_pct: number;
+}
+
+export interface CostSensitivity {
+  base_fraud_loss: number;
+  base_fp_cost: number;
+  fraud_loss_multipliers: number[];
+  fp_cost_multipliers: number[];
+  grid: CostSensitivityCell[];
+}
+
+export interface CostSensitivityResult {
+  sensitivity: CostSensitivity | null;
+  message: string | null;
+}
+
 const BASE = "/api";
 
 // Every /api/* route except /api/health requires this (see api/main.py's
@@ -105,4 +128,5 @@ export const api = {
     request<CostAnalysis>(
       `/cost-analysis?fraud_loss=${fraudLoss}&fp_cost=${fpCost}`
     ),
+  costSensitivity: () => request<CostSensitivityResult>("/cost-analysis/sensitivity"),
 };

@@ -7,6 +7,7 @@ import { api } from "../api/client";
 vi.mock("../api/client", () => ({
   api: {
     costAnalysis: vi.fn(),
+    costSensitivity: vi.fn(),
   },
 }));
 
@@ -17,6 +18,10 @@ function mockCostAnalysisResponse() {
     eval_report: null,
     defaults: { avg_fraud_loss: 5000, avg_fp_cost: 150 },
     params: { fraud_loss: 5000, fp_cost: 150 },
+  });
+  mockedApi.costSensitivity.mockResolvedValue({
+    sensitivity: null,
+    message: "No sensitivity sweep yet — run `python src/cost_sensitivity.py` to generate one.",
   });
 }
 
@@ -66,6 +71,7 @@ describe("CostAnalysis", () => {
       defaults: { avg_fraud_loss: 5000, avg_fp_cost: 150 },
       params: { fraud_loss: 5000, fp_cost: 150 },
     });
+    mockedApi.costSensitivity.mockResolvedValue({ sensitivity: null, message: null });
 
     render(<CostAnalysis />);
 
@@ -82,9 +88,48 @@ describe("CostAnalysis", () => {
 
   it("surfaces an error message if the request rejects", async () => {
     mockedApi.costAnalysis.mockRejectedValue(new Error("server error"));
+    mockedApi.costSensitivity.mockResolvedValue({ sensitivity: null, message: null });
 
     render(<CostAnalysis />);
 
     expect(await screen.findByText(/server error/i)).toBeInTheDocument();
+  });
+
+  it("renders the sensitivity table when a sweep report exists", async () => {
+    mockCostAnalysisResponse();
+    mockedApi.costSensitivity.mockResolvedValue({
+      sensitivity: {
+        base_fraud_loss: 5000,
+        base_fp_cost: 150,
+        fraud_loss_multipliers: [1.0, 2.0],
+        fp_cost_multipliers: [1.0],
+        grid: [
+          {
+            fraud_loss_multiplier: 1.0,
+            fp_cost_multiplier: 1.0,
+            avg_fraud_loss: 5000,
+            avg_fp_cost: 150,
+            optimal_threshold: 0.33,
+            optimal_total_cost: 4359900,
+            estimated_savings_pct: 9.4,
+          },
+          {
+            fraud_loss_multiplier: 2.0,
+            fp_cost_multiplier: 1.0,
+            avg_fraud_loss: 10000,
+            avg_fp_cost: 150,
+            optimal_threshold: 0.22,
+            optimal_total_cost: 8000000,
+            estimated_savings_pct: 27.9,
+          },
+        ],
+      },
+      message: null,
+    });
+
+    render(<CostAnalysis />);
+
+    expect(await screen.findByText("0.33")).toBeInTheDocument();
+    expect(screen.getByText("0.22")).toBeInTheDocument();
   });
 });

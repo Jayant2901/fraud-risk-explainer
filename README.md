@@ -23,14 +23,20 @@ solving a real gap in that standard approach:
    and must say so, rather than silently overriding the model. See
    `src/entity_memory.py`.
 
-2. **Cost-optimal threshold, not just AUC.** A risk team doesn't
-   optimize accuracy — they minimize expected cost, where missed fraud
-   and wrongly-blocked legitimate customers have very different costs.
-   `src/cost_analysis.py` sweeps thresholds and picks the one that
-   minimizes `false_negatives * avg_fraud_loss + false_positives *
-   avg_fp_cost`, and reports the estimated savings vs. a naive 0.5
-   threshold. The cost assumptions are explicit, adjustable constants —
-   not hidden inside a single "accuracy" number.
+2. **Cost-optimal threshold, not just AUC — and not just one point
+   estimate.** A risk team doesn't optimize accuracy — they minimize
+   expected cost, where missed fraud and wrongly-blocked legitimate
+   customers have very different costs. `src/cost_analysis.py` sweeps
+   thresholds and picks the one that minimizes `false_negatives *
+   avg_fraud_loss + false_positives * avg_fp_cost`, and reports the
+   estimated savings vs. a naive 0.5 threshold. The cost assumptions
+   are explicit, adjustable constants, not hidden inside a single
+   "accuracy" number — and `threshold_sensitivity()` goes a step
+   further, sweeping a grid of *plausible* cost assumptions (0.5x-2x
+   the defaults) so the "optimal" threshold is reported as a range,
+   not a single number staked on guessing two constants exactly right.
+   See [Does the cost-optimal threshold hold up under different cost
+   assumptions?](#does-the-cost-optimal-threshold-hold-up-under-different-cost-assumptions)
 
 3. **Structured LLM output, not scraped JSON.** `src/llm_agent.py` calls
    Gemini (`gemini-3.6-flash`) through the Google Gen AI SDK's
@@ -325,6 +331,7 @@ risk-manager/
 │   ├── redis_utils.py           <- optional-Redis client factory + KeyedCache (idempotency/explanations)
 │   ├── decision_rules.py        <- decide_action() — shared by the live API and offline analyses
 │   ├── escalation_ablation.py   <- offline: does entity escalation actually help? (see below)
+│   ├── cost_sensitivity.py      <- offline: cost-optimal threshold sensitivity sweep (see below)
 │   └── llm_agent.py             <- Gemini (Google Gen AI API) agent, reasons over score + history
 ├── api/
 │   ├── main.py                  <- FastAPI JSON API wrapping the src/ modules
@@ -333,7 +340,7 @@ risk-manager/
 │   ├── conftest.py               <- shared fixtures: fake data/model/agent, FastAPI TestClient
 │   ├── test_entity_memory.py     <- parametrized: in-process AND Redis (fakeredis)
 │   ├── test_keyed_cache.py       <- parametrized: in-process AND Redis (fakeredis)
-│   ├── test_cost_analysis.py
+│   ├── test_cost_analysis.py     <- includes threshold_sensitivity() grid arithmetic
 │   ├── test_data_utils.py        <- includes the leakage-prevention regression test
 │   ├── test_risk_explainer.py
 │   ├── test_api.py               <- routes, idempotency, decide_action
@@ -472,6 +479,41 @@ shared across restarts/workers too.
   route. Deliberately not behind `verify_api_key`: Prometheus scraping
   conventions assume network-level access control, not an application
   key, and it's operational data, not customer data.
+
+## Does the cost-optimal threshold hold up under different cost assumptions?
+
+`models/eval_report.txt` quotes one cost-optimal threshold (0.33) computed
+from a single assumed cost pair (avg_fraud_loss = Rs 5,000, avg_fp_cost =
+Rs 150) — a real risk team's first question would be "how much does that
+threshold move if those two numbers are wrong?" `src/cost_sensitivity.py`
+answers that directly: it scores the same real chronological test set
+(118,108 transactions) with the already-trained model, then sweeps both
+costs from 0.5x to 2x their defaults via `cost_analysis.threshold_sensitivity()`.
+Run it yourself with `python src/cost_sensitivity.py`; output is saved to
+`models/cost_sensitivity_report.json` (consumed by `GET
+/api/cost-analysis/sensitivity` and the sensitivity table in the frontend's
+Cost Analysis tab) and `models/cost_sensitivity_report.txt`. The table
+below is the actual grid from that run — not invented:
+
+| avg_fraud_loss ↓ / avg_fp_cost → | Rs 75 | Rs 150 | Rs 225 | Rs 300 |
+|---|---|---|---|---|
+| **Rs 2,500** | 0.33 | 0.48 | 0.56 | 0.63 |
+| **Rs 5,000** | 0.22 | 0.33 | 0.42 | 0.48 |
+| **Rs 7,500** | 0.20 | 0.28 | 0.33 | 0.42 |
+| **Rs 10,000** | 0.16 | 0.22 | 0.28 | 0.33 |
+
+Across this 4x4 grid, the cost-optimal threshold ranges from **0.16 to
+0.63** — a 4x spread — depending entirely on where the two assumed costs
+actually fall within a plausible 0.5x-2x range. The single 0.33 figure
+quoted elsewhere in this README is the midpoint of that grid (the
+default Rs 5,000 / Rs 150 cell), not a precise, defensible number on its
+own. **Honest read:** the direction of the sensitivity is intuitive
+(costlier missed fraud pulls the threshold down toward flagging more;
+costlier false positives pushes it up toward flagging less), but the
+magnitude of the swing means this project's specific "0.33" shouldn't be
+quoted as if it were exact — what should be quoted is that a real
+deployment needs real cost figures from finance/ops before the threshold
+number means anything precise.
 
 ## Does entity escalation actually help?
 
