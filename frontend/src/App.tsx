@@ -1,8 +1,9 @@
 import { useState } from "react";
 import LiveScoring from "./components/LiveScoring";
 import CostAnalysis from "./components/CostAnalysis";
+import ReviewQueue from "./components/ReviewQueue";
 
-type Tab = "live" | "cost";
+type Tab = "live" | "cost" | "review";
 
 export default function App() {
   const [tab, setTab] = useState<Tab>("live");
@@ -20,6 +21,7 @@ export default function App() {
       <nav className="flex gap-1 px-6 pt-4 border-b border-slate-800">
         {[
           { id: "live" as const, label: "Live Scoring" },
+          { id: "review" as const, label: "Review Queue" },
           { id: "cost" as const, label: "Cost-Optimal Threshold" },
         ].map((t) => (
           <button
@@ -37,7 +39,7 @@ export default function App() {
       </nav>
 
       <main className="p-6">
-        {tab === "live" ? <LiveScoring /> : <CostAnalysis />}
+        {tab === "live" ? <LiveScoring /> : tab === "review" ? <ReviewQueue /> : <CostAnalysis />}
       </main>
     </div>
   );

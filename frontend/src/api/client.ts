@@ -75,6 +75,27 @@ export interface CostSensitivityResult {
   message: string | null;
 }
 
+export interface ReviewQueueItem {
+  verdict_id: string;
+  entity_id: string;
+  txn_index: number;
+  risk_score: number;
+  decision: Decision;
+  baseline_decision: Decision;
+  escalated_due_to_history: boolean;
+  disposition: "CONFIRMED_FRAUD" | "FALSE_POSITIVE" | null;
+  disposed_at: string | null;
+}
+
+export interface ReviewQueueMetrics {
+  total_disposed: number;
+  overall_precision: number | null;
+  escalated_count: number;
+  escalated_precision: number | null;
+  non_escalated_count: number;
+  non_escalated_precision: number | null;
+}
+
 const BASE = "/api";
 
 // Every /api/* route except /api/health requires this (see api/main.py's
@@ -129,4 +150,11 @@ export const api = {
       `/cost-analysis?fraud_loss=${fraudLoss}&fp_cost=${fpCost}`
     ),
   costSensitivity: () => request<CostSensitivityResult>("/cost-analysis/sensitivity"),
+  listReviewQueue: () => request<{ items: ReviewQueueItem[] }>("/review-queue?status=pending"),
+  disposeReviewItem: (verdictId: string, disposition: "CONFIRMED_FRAUD" | "FALSE_POSITIVE") =>
+    request<ReviewQueueItem>(`/review-queue/${encodeURIComponent(verdictId)}/disposition`, {
+      method: "POST",
+      body: JSON.stringify({ disposition }),
+    }),
+  reviewQueueMetrics: () => request<ReviewQueueMetrics>("/review-queue/metrics"),
 };

@@ -78,6 +78,7 @@ def client(monkeypatch, sample_df):
     main._memory.reset()
     main._explanations_cache.clear()
     main._idempotency_cache.clear()
+    main._review_queue.reset()
     main.limiter._storage.reset()
 
     from fastapi.testclient import TestClient

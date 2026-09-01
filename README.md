@@ -94,6 +94,20 @@ solving a real gap in that standard approach:
    hammered with no limit. Cheap read routes (`/api/entities`, etc.)
    are deliberately not subject to this budget.
 
+8. **A human review queue that closes the feedback loop.** A model's
+   score isn't the end of a real fraud pipeline — a human disposing a
+   prioritized queue, and that disposition feeding back into the system,
+   is. Every REVIEW/BLOCK verdict lands in `src/review_queue.py`
+   (same REDIS_URL-optional design as entity memory); a reviewer marks
+   each one `CONFIRMED_FRAUD` or `FALSE_POSITIVE` in the frontend's
+   Review Queue tab (`POST /api/review-queue/{verdict_id}/disposition`,
+   `409` on a repeat disposition so a retry can't silently overwrite a
+   reviewer's call). `GET /api/review-queue/metrics` then recomputes
+   [Phase 0's escalation-ablation comparison](#does-entity-escalation-actually-help)
+   from these *live* dispositions — precision specifically among
+   escalation-triggered flags vs. non-escalated ones — instead of only
+   the offline test set.
+
 ## A note on the dataset and the entity fingerprint
 
 IEEE-CIS is a genuinely anonymized dataset — it deliberately does not
@@ -332,6 +346,7 @@ risk-manager/
 │   ├── decision_rules.py        <- decide_action() — shared by the live API and offline analyses
 │   ├── escalation_ablation.py   <- offline: does entity escalation actually help? (see below)
 │   ├── cost_sensitivity.py      <- offline: cost-optimal threshold sensitivity sweep (see below)
+│   ├── review_queue.py          <- human review queue + feedback-loop metrics (in-process + Redis)
 │   └── llm_agent.py             <- Gemini (Google Gen AI API) agent, reasons over score + history
 ├── api/
 │   ├── main.py                  <- FastAPI JSON API wrapping the src/ modules
@@ -348,6 +363,7 @@ risk-manager/
 │   ├── test_rate_limit.py        <- 30/minute on /api/score
 │   ├── test_logging_utils.py     <- JSON formatter, request-id propagation, /metrics
 │   ├── test_escalation_ablation.py <- metric arithmetic (recall/false-flag-rate/precision)
+│   ├── test_review_queue.py      <- parametrized: in-process AND Redis (fakeredis)
 │   └── test_llm_agent.py         <- mocked Gemini client
 ├── requirements.txt              <- pinned, runtime only
 ├── requirements-dev.txt          <- + pytest/fakeredis/etc, includes requirements.txt
@@ -363,6 +379,7 @@ risk-manager/
         ├── api/client.ts        <- typed fetch client for the backend
         ├── components/
         │   ├── LiveScoring.tsx (+ .test.tsx)
+        │   ├── ReviewQueue.tsx (+ .test.tsx)
         │   └── CostAnalysis.tsx (+ .test.tsx)
         ├── test/setup.ts
         └── App.tsx

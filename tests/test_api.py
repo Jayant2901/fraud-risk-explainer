@@ -252,6 +252,131 @@ class TestExplanations:
         assert body["verdict"]["explanation"] == "fake explanation"
 
 
+class TestReviewQueue:
+    """FakeExplainer (conftest.py) returns a fixed risk_score=42.0, which
+    decide_action() turns into REVIEW (non-ALLOW) for an unescalated
+    entity — so every /api/score call in these tests lands in the queue
+    without needing to juggle escalation state."""
+
+    def test_flagged_verdict_appears_in_the_pending_queue(self, client, auth_headers):
+        score_resp = client.post(
+            "/api/score", json={"entity_id": "entity-a", "txn_index": 0}, headers=auth_headers
+        )
+        verdict_id = score_resp.json()["verdict_id"]
+        assert score_resp.json()["decision"]["action"] == "REVIEW"
+
+        r = client.get("/api/review-queue?status=pending", headers=auth_headers)
+        assert r.status_code == 200
+        items = r.json()["items"]
+        assert any(i["verdict_id"] == verdict_id for i in items)
+
+    def test_allowed_verdicts_never_reach_the_queue(self, client, auth_headers, monkeypatch):
+        import api.main as main
+        from tests.conftest import FakeExplainer
+
+        monkeypatch.setattr(main, "get_explainer", lambda: FakeExplainer(risk_score=5.0))
+
+        score_resp = client.post(
+            "/api/score", json={"entity_id": "entity-a", "txn_index": 0}, headers=auth_headers
+        )
+        assert score_resp.json()["decision"]["action"] == "ALLOW"
+
+        items = client.get("/api/review-queue?status=pending", headers=auth_headers).json()["items"]
+        assert items == []
+
+    def test_pending_items_are_sorted_by_risk_score_descending(self, client, auth_headers, monkeypatch):
+        import api.main as main
+        from tests.conftest import FakeExplainer
+
+        monkeypatch.setattr(main, "get_explainer", lambda: FakeExplainer(risk_score=45.0))
+        client.post("/api/score", json={"entity_id": "entity-a", "txn_index": 0}, headers=auth_headers)
+
+        monkeypatch.setattr(main, "get_explainer", lambda: FakeExplainer(risk_score=90.0))
+        client.post("/api/score", json={"entity_id": "entity-b", "txn_index": 0}, headers=auth_headers)
+
+        items = client.get("/api/review-queue?status=pending", headers=auth_headers).json()["items"]
+        assert [i["risk_score"] for i in items] == [90.0, 45.0]
+
+    def test_disposing_a_flagged_verdict_removes_it_from_pending(self, client, auth_headers):
+        score_resp = client.post(
+            "/api/score", json={"entity_id": "entity-a", "txn_index": 0}, headers=auth_headers
+        )
+        verdict_id = score_resp.json()["verdict_id"]
+
+        r = client.post(
+            f"/api/review-queue/{verdict_id}/disposition",
+            json={"disposition": "CONFIRMED_FRAUD"},
+            headers=auth_headers,
+        )
+        assert r.status_code == 200
+        assert r.json()["disposition"] == "CONFIRMED_FRAUD"
+
+        items = client.get("/api/review-queue?status=pending", headers=auth_headers).json()["items"]
+        assert items == []
+
+    def test_disposing_twice_returns_409_and_keeps_the_first_disposition(self, client, auth_headers):
+        score_resp = client.post(
+            "/api/score", json={"entity_id": "entity-a", "txn_index": 0}, headers=auth_headers
+        )
+        verdict_id = score_resp.json()["verdict_id"]
+
+        client.post(
+            f"/api/review-queue/{verdict_id}/disposition",
+            json={"disposition": "CONFIRMED_FRAUD"},
+            headers=auth_headers,
+        )
+        r = client.post(
+            f"/api/review-queue/{verdict_id}/disposition",
+            json={"disposition": "FALSE_POSITIVE"},
+            headers=auth_headers,
+        )
+        assert r.status_code == 409
+
+    def test_disposing_an_unknown_verdict_id_returns_404(self, client, auth_headers):
+        r = client.post(
+            "/api/review-queue/does-not-exist/disposition",
+            json={"disposition": "CONFIRMED_FRAUD"},
+            headers=auth_headers,
+        )
+        assert r.status_code == 404
+
+    def test_invalid_disposition_value_is_rejected(self, client, auth_headers):
+        score_resp = client.post(
+            "/api/score", json={"entity_id": "entity-a", "txn_index": 0}, headers=auth_headers
+        )
+        verdict_id = score_resp.json()["verdict_id"]
+
+        r = client.post(
+            f"/api/review-queue/{verdict_id}/disposition",
+            json={"disposition": "MAYBE"},
+            headers=auth_headers,
+        )
+        assert r.status_code == 422
+
+    def test_metrics_reflect_actual_dispositions(self, client, auth_headers):
+        r1 = client.post("/api/score", json={"entity_id": "entity-a", "txn_index": 0}, headers=auth_headers)
+        r2 = client.post("/api/score", json={"entity_id": "entity-a", "txn_index": 1}, headers=auth_headers)
+
+        client.post(
+            f"/api/review-queue/{r1.json()['verdict_id']}/disposition",
+            json={"disposition": "CONFIRMED_FRAUD"},
+            headers=auth_headers,
+        )
+        client.post(
+            f"/api/review-queue/{r2.json()['verdict_id']}/disposition",
+            json={"disposition": "FALSE_POSITIVE"},
+            headers=auth_headers,
+        )
+
+        metrics = client.get("/api/review-queue/metrics", headers=auth_headers).json()
+        assert metrics["total_disposed"] == 2
+        assert metrics["overall_precision"] == 0.5
+
+    def test_unsupported_status_filter_returns_400(self, client, auth_headers):
+        r = client.get("/api/review-queue?status=disposed", headers=auth_headers)
+        assert r.status_code == 400
+
+
 class TestCostAnalysis:
     def test_returns_defaults_when_no_params_given(self, client, auth_headers):
         r = client.get("/api/cost-analysis", headers=auth_headers)

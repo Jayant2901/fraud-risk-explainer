@@ -29,6 +29,7 @@ import logging
 import os
 import sys
 import uuid
+from typing import Literal
 
 sys.path.append(os.path.join(os.path.dirname(__file__), "..", "src"))
 sys.path.append(os.path.dirname(__file__))
@@ -53,6 +54,7 @@ from risk_explainer import RiskExplainer
 from llm_agent import RiskExplainerAgent
 from entity_memory import create_entity_memory
 from redis_utils import get_redis_client, KeyedCache
+from review_queue import create_review_queue, UnknownVerdictError, AlreadyDisposedError
 from data_utils import load_raw_data, engineer_features
 from cost_analysis import cost_curve, DEFAULT_AVG_FRAUD_LOSS, DEFAULT_AVG_FP_COST
 
@@ -160,6 +162,11 @@ _explanations_cache = KeyedCache(_redis_client, prefix="riskmgr:explanations", t
 # duplicate, not a second real transaction.
 _idempotency_cache = KeyedCache(_redis_client, prefix="riskmgr:idempotency", ttl_seconds=24 * 60 * 60)
 
+# Human review queue: every flagged (non-ALLOW) verdict lands here for a
+# reviewer to dispose as CONFIRMED_FRAUD/FALSE_POSITIVE. See
+# src/review_queue.py.
+_review_queue = create_review_queue(_redis_client)
+
 
 def _generate_explanation(verdict_id: str, risk_score: float, top_factors: list, escalation: dict):
     # This runs in a background task after the response has already gone
@@ -230,6 +237,10 @@ class ScoreRequest(BaseModel):
 
 class ResetRequest(BaseModel):
     entity_id: str
+
+
+class DispositionRequest(BaseModel):
+    disposition: Literal["CONFIRMED_FRAUD", "FALSE_POSITIVE"]
 
 
 @router.get("/api/entities")
@@ -304,6 +315,11 @@ def score(
     # so escalation state for this entity's NEXT transaction is already
     # correct.
     decision = decide_action(result["risk_score"], escalation_before)
+    # What the system would have done with no entity memory at all — kept
+    # alongside the real decision so the review queue's metrics can split
+    # reviewer precision by whether escalation is what triggered the flag
+    # (the live version of src/escalation_ablation.py's offline comparison).
+    baseline_decision = decide_action(result["risk_score"], {"state": "NORMAL"})
     _memory.record_verdict(req.entity_id, decision["action"], result["risk_score"])
 
     verdict_id = str(uuid.uuid4())
@@ -311,6 +327,19 @@ def score(
     background_tasks.add_task(
         _generate_explanation, verdict_id, result["risk_score"], result["top_factors"], escalation_before
     )
+
+    if decision["action"] != "ALLOW":
+        _review_queue.add({
+            "verdict_id": verdict_id,
+            "entity_id": req.entity_id,
+            "txn_index": req.txn_index,
+            "risk_score": result["risk_score"],
+            "decision": decision,
+            "baseline_decision": baseline_decision,
+            "escalated_due_to_history": decision["escalated_due_to_history"],
+            "disposition": None,
+            "disposed_at": None,
+        })
 
     response = {
         "risk_score": result["risk_score"],
@@ -331,6 +360,28 @@ def get_explanation(verdict_id: str):
     if explanation is None:
         raise HTTPException(status_code=404, detail="Unknown verdict_id")
     return explanation
+
+
+@router.get("/api/review-queue")
+def list_review_queue(status: str = "pending"):
+    if status != "pending":
+        raise HTTPException(status_code=400, detail="Only status=pending is currently supported")
+    return {"items": _review_queue.list_pending()}
+
+
+@router.post("/api/review-queue/{verdict_id}/disposition")
+def dispose_review_item(verdict_id: str, req: DispositionRequest):
+    try:
+        return _review_queue.dispose(verdict_id, req.disposition)
+    except UnknownVerdictError:
+        raise HTTPException(status_code=404, detail="Unknown verdict_id")
+    except AlreadyDisposedError:
+        raise HTTPException(status_code=409, detail="This item has already been disposed")
+
+
+@router.get("/api/review-queue/metrics")
+def get_review_queue_metrics():
+    return _review_queue.metrics()
 
 
 @router.get("/api/cost-analysis")
