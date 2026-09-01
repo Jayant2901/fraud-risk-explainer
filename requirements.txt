@@ -9,3 +9,8 @@ uvicorn[standard]
 google-genai
 pydantic
 joblib
+
+# Testing
+pytest
+pytest-cov
+httpx

@@ -54,10 +54,20 @@ export interface CostAnalysis {
 
 const BASE = "/api";
 
+// Every /api/* route except /api/health requires this (see api/main.py's
+// verify_api_key). Set in frontend/.env (copy from .env.example) — Vite
+// only exposes VITE_-prefixed vars to client code, and only at build/dev-
+// server time, so this is baked in per-environment, not runtime-secret.
+const API_KEY = import.meta.env.VITE_API_KEY;
+
 async function request<T>(path: string, init?: RequestInit): Promise<T> {
   const res = await fetch(`${BASE}${path}`, {
     ...init,
-    headers: { "Content-Type": "application/json", ...init?.headers },
+    headers: {
+      "Content-Type": "application/json",
+      ...(API_KEY ? { "X-API-Key": API_KEY } : {}),
+      ...init?.headers,
+    },
   });
   if (!res.ok) {
     const body = await res.text().catch(() => "");

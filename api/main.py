@@ -8,6 +8,10 @@ a standalone, scalable frontend (see frontend/). Run from project root:
 
 Requires:
   - models/ populated by `python src/train_model.py`
+  - API_KEY set in the environment — every /api/* route except
+    /api/health requires header `X-API-Key: <API_KEY>`. There is no
+    fallback or generated default: if API_KEY is unset, every protected
+    route returns 401 (fail closed) rather than being left open.
   - GEMINI_API_KEY set in the environment (see src/llm_agent.py) — free
     tier, no billing required (https://aistudio.google.com/apikey).
     Without it, the score/decision endpoint still works; only the AI
@@ -24,8 +28,10 @@ from collections import OrderedDict
 from functools import lru_cache
 
 import pandas as pd
-from fastapi import BackgroundTasks, FastAPI, Header, HTTPException
+from fastapi import BackgroundTasks, Depends, FastAPI, Header, HTTPException, Security
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.routing import APIRouter
+from fastapi.security import APIKeyHeader
 from pydantic import BaseModel
 
 from risk_explainer import RiskExplainer
@@ -44,6 +50,33 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+_api_key_header = APIKeyHeader(name="X-API-Key", auto_error=False)
+
+
+def verify_api_key(provided_key: str | None = Security(_api_key_header)) -> None:
+    """Every /api/* route except /api/health depends on this (via `router`
+    below). Reads API_KEY from the environment on every call, rather than
+    caching it at import time, so there's exactly one source of truth and
+    no risk of serving stale auth after a config change picked up by a
+    process restart.
+
+    Fails closed: an unset API_KEY is NOT "auth disabled" — every request
+    is rejected. A generated/default key would be worse than no key at
+    all (false sense of security), so this refuses instead.
+    """
+    expected_key = os.environ.get("API_KEY")
+    if not expected_key:
+        raise HTTPException(status_code=401, detail="API_KEY is not configured on the server")
+    if provided_key != expected_key:
+        raise HTTPException(status_code=401, detail="Missing or invalid X-API-Key header")
+
+
+# All routes except /api/health require a valid API key. Grouped on a
+# router (rather than a per-route `dependencies=[...]`) so a new route
+# added later is protected by default instead of by remembering to
+# annotate it.
+router = APIRouter(dependencies=[Depends(verify_api_key)])
 
 EVAL_REPORT_PATH = "models/eval_report.txt"
 
@@ -184,14 +217,14 @@ class ResetRequest(BaseModel):
     entity_id: str
 
 
-@app.get("/api/entities")
+@router.get("/api/entities")
 def list_entities():
     samples = get_sample_data()
     entity_ids = samples["entity_id"].unique().tolist()
     return {"entities": entity_ids}
 
 
-@app.get("/api/entities/{entity_id}/transactions")
+@router.get("/api/entities/{entity_id}/transactions")
 def list_transactions(entity_id: str):
     samples = get_sample_data()
     txns = samples[samples["entity_id"] == entity_id]
@@ -212,18 +245,18 @@ def list_transactions(entity_id: str):
     }
 
 
-@app.get("/api/entities/{entity_id}/escalation")
+@router.get("/api/entities/{entity_id}/escalation")
 def get_escalation(entity_id: str):
     return _memory.get_escalation_state(entity_id)
 
 
-@app.post("/api/entities/reset")
+@router.post("/api/entities/reset")
 def reset_entity(req: ResetRequest):
     _memory.reset(req.entity_id)
     return {"status": "ok"}
 
 
-@app.post("/api/score")
+@router.post("/api/score")
 def score(
     req: ScoreRequest,
     background_tasks: BackgroundTasks,
@@ -275,7 +308,7 @@ def score(
     return response
 
 
-@app.get("/api/explanations/{verdict_id}")
+@router.get("/api/explanations/{verdict_id}")
 def get_explanation(verdict_id: str):
     explanation = _explanations.get(verdict_id)
     if explanation is None:
@@ -283,7 +316,7 @@ def get_explanation(verdict_id: str):
     return explanation
 
 
-@app.get("/api/cost-analysis")
+@router.get("/api/cost-analysis")
 def get_cost_analysis(
     fraud_loss: float = DEFAULT_AVG_FRAUD_LOSS,
     fp_cost: float = DEFAULT_AVG_FP_COST,
@@ -306,3 +339,6 @@ def get_cost_analysis(
 @app.get("/api/health")
 def health():
     return {"status": "ok"}
+
+
+app.include_router(router)

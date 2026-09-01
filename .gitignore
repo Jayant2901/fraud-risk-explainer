@@ -9,6 +9,12 @@ __pycache__/
 *.py[cod]
 *.egg-info/
 .pytest_cache/
+.coverage
+htmlcov/
+
+# Secrets (never commit real keys — copy .env.example to .env instead)
+.env
+.env.local
 
 # Editor (machine-specific interpreter path, not portable across clones)
 .vscode/

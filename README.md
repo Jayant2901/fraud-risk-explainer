@@ -103,21 +103,41 @@ python src/download_data.py
 
 This places `train_transaction.csv` and `train_identity.csv` in `data/`.
 
-### 2. Set your Gemini API key (free)
+### 2. Set your API keys
+
+Copy the example env file and fill it in:
 
 ```bash
-export GEMINI_API_KEY=...          # macOS/Linux
-```
-```powershell
-$env:GEMINI_API_KEY = "..."        # Windows PowerShell, current session
-setx GEMINI_API_KEY "..."          # Windows PowerShell, permanent (needs a new terminal to take effect)
+cp .env.example .env
 ```
 
-Get a free key from [aistudio.google.com/apikey](https://aistudio.google.com/apikey)
-— no billing required for the free tier (rate-limited). Without this
-set, `/api/score` still returns the instant ALLOW/REVIEW/BLOCK decision
-(see point 4 below) — only the AI explanation panel falls back to a
-"credentials missing" message.
+- **`API_KEY`** — required for every `/api/*` route except `/api/health`.
+  There's no default: if unset, the API rejects every request with 401
+  (fail closed) rather than being left open. Generate one yourself:
+  ```bash
+  python -c "import secrets; print(secrets.token_urlsafe(32))"
+  ```
+- **`GEMINI_API_KEY`** — free key from
+  [aistudio.google.com/apikey](https://aistudio.google.com/apikey), no
+  billing required (rate-limited). Without this set, `/api/score` still
+  returns the instant ALLOW/REVIEW/BLOCK decision (see point 4 above) —
+  only the AI explanation panel falls back to a "credentials missing"
+  message.
+
+The backend doesn't auto-load `.env` on its own — either export the
+values into your shell, or run uvicorn with `--env-file .env` (requires
+`python-dotenv`, not currently a dependency):
+
+```bash
+export API_KEY=...          # macOS/Linux
+export GEMINI_API_KEY=...
+```
+```powershell
+$env:API_KEY = "..."        # Windows PowerShell, current session
+$env:GEMINI_API_KEY = "..."
+setx API_KEY "..."          # Windows PowerShell, permanent (needs a new terminal to take effect)
+setx GEMINI_API_KEY "..."
+```
 
 ### 3. Train the model
 
@@ -154,12 +174,16 @@ yet."
 
 ```bash
 cd frontend
+cp .env.example .env   # set VITE_API_KEY to the same value as the backend's API_KEY
 npm install
 npm run dev
 ```
 
 Opens the app at `http://localhost:5173` (Vite dev server proxies
 `/api/*` to the backend on port 8000 — see `frontend/vite.config.ts`).
+Vite loads `.env` automatically — no export/shell step needed here,
+unlike the backend. If `VITE_API_KEY` doesn't match the backend's
+`API_KEY` exactly, every request the UI makes will 401.
 For a production build: `npm run build` (outputs static assets to
 `frontend/dist/`), served by any static host or reverse-proxied behind
 the FastAPI backend.
@@ -179,14 +203,40 @@ optimal threshold shifts.
 ### Running tests
 
 ```bash
-python -m unittest discover -s tests
+pytest                                    # run everything
+pytest --cov=src --cov=api --cov-report=term-missing   # with coverage
 ```
 
-Covers `llm_agent.py`'s prompt sanitization (the prompt-injection
-defense) and every failure path against a mocked Gemini client —
-missing/invalid API key, rate limiting, server errors, malformed
-schema — each asserting it degrades to a safe `REVIEW` fallback instead
-of crashing. No API key or network access needed to run these.
+Runs clean with **no trained model, no Kaggle dataset, no `API_KEY`, and
+no `GEMINI_API_KEY`** — every module's tests either exercise pure logic
+directly or fake out the one thing that needs real credentials/data
+(`tests/conftest.py`'s `client` fixture fakes `get_sample_data`,
+`get_explainer`, and `get_agent`; `test_llm_agent.py` mocks the Gemini
+client itself).
+
+- `test_entity_memory.py` — WATCH/ELEVATED threshold crossing, the
+  rolling-window eviction, single-vs-all `reset()`.
+- `test_cost_analysis.py` — a hand-computable fraud/legit example, so
+  `cost_curve`'s fn/fp/tp counts and `optimal_threshold`'s savings math
+  are checked against numbers worked out by hand, not just "doesn't crash."
+- `test_data_utils.py` — the **leakage-prevention test that matters
+  most**: asserts `add_causal_entity_history` computes each row's prior
+  fraud rate using only strictly-earlier transactions for that entity —
+  written so it would fail if the causal shift were ever accidentally
+  removed (verified by hand against a broken variant while writing it).
+- `test_risk_explainer.py` — trains a tiny real XGBoost model as a
+  fixture (not the 590K-row CSVs) and includes a regression test for the
+  single-row categorical-dtype bug described in the module's own docstring.
+- `test_api.py` / `test_api_auth.py` — every route via FastAPI's
+  `TestClient`: happy paths, 400/404s, the `Idempotency-Key` dedup
+  behavior (same key → identical response, verdict recorded once, not
+  twice), the auth dependency (401 without/with-wrong key, fail-closed
+  when `API_KEY` itself is unset), and a regression test proving a crash
+  inside the background explanation task resolves to a safe fallback
+  instead of leaving the frontend polling "pending" forever.
+- `test_llm_agent.py` — prompt-injection sanitization and every Gemini
+  failure path (missing/invalid key, rate limiting, server errors,
+  malformed schema) against a mocked client.
 
 ## Project structure
 
@@ -205,7 +255,14 @@ risk-manager/
 ├── api/
 │   └── main.py                  <- FastAPI JSON API wrapping the src/ modules
 ├── tests/
-│   └── test_llm_agent.py        <- llm_agent.py unit tests (mocked Gemini client)
+│   ├── conftest.py               <- shared fixtures: fake data/model/agent, FastAPI TestClient
+│   ├── test_entity_memory.py
+│   ├── test_cost_analysis.py
+│   ├── test_data_utils.py        <- includes the leakage-prevention regression test
+│   ├── test_risk_explainer.py
+│   ├── test_api.py               <- routes, idempotency, decide_action
+│   ├── test_api_auth.py          <- API_KEY auth, fail-closed behavior
+│   └── test_llm_agent.py         <- mocked Gemini client
 └── frontend/                    <- React + TypeScript + Tailwind SPA
     └── src/
         ├── api/client.ts        <- typed fetch client for the backend
