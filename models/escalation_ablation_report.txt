@@ -4,18 +4,18 @@ Escalation ablation study
 Test set: 118,108 transactions (4,064 fraud, 114,044 legit), replayed in chronological order through a fresh EntityRiskMemory (same order/state a live deployment would see).
 
 === Baseline: raw model score only, no entity escalation ===
-Recall (frauds flagged REVIEW/BLOCK):    0.8578 (3,486 / 4,064)
-False-flag rate (legit txns flagged):    0.0922 (10,515 / 114,044)
+Recall (frauds flagged REVIEW/BLOCK):    0.8834 (3,590 / 4,064)
+False-flag rate (legit txns flagged):    0.1167 (13,312 / 114,044)
 
 === Escalation-adjusted: what the live system does today ===
-Recall (frauds flagged REVIEW/BLOCK):    0.8873 (3,606 / 4,064)
-False-flag rate (legit txns flagged):    0.1689 (19,266 / 114,044)
+Recall (frauds flagged REVIEW/BLOCK):    0.9097 (3,697 / 4,064)
+False-flag rate (legit txns flagged):    0.2004 (22,857 / 114,044)
 
-Recall delta from escalation:  +0.0295
-False-flag-rate delta:         +0.0767
+Recall delta from escalation:  +0.0263
+False-flag-rate delta:         +0.0837
 
 === Precision of escalation-triggered flips ===
 Of the transactions where entity escalation history actually pushed the action higher than the raw score alone would have (escalated_due_to_history == True):
-  Flip count:  12,087
-  Of those, actually fraud:  389
-  Precision of escalation-triggered flips:  0.0322
+  Flip count:  13,473
+  Of those, actually fraud:  336
+  Precision of escalation-triggered flips:  0.0249

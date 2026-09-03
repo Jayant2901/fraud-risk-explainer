@@ -66,9 +66,16 @@ def client(monkeypatch, sample_df):
     main.get_sample_data.cache_clear()
     main.get_explainer.cache_clear()
     main.get_agent.cache_clear()
+    main.get_decision_thresholds.cache_clear()
     monkeypatch.setattr(main, "get_sample_data", lambda: sample_df)
     monkeypatch.setattr(main, "get_explainer", lambda: FakeExplainer())
     monkeypatch.setattr(main, "get_agent", lambda: FakeAgent())
+    # Inject fixed, explicit thresholds rather than letting tests depend
+    # on whatever models/decision_thresholds.joblib happens to contain
+    # (or not) on the machine running them — every existing test's
+    # assertions (e.g. FakeExplainer's fixed risk_score=42.0 -> REVIEW)
+    # were written against the original 40.0/80.0 boundaries.
+    monkeypatch.setattr(main, "get_decision_thresholds", lambda: {"review": 40.0, "block": 80.0})
 
     # Module-level singletons persist across tests otherwise (escalation
     # history, idempotency cache, pending explanations, and the rate

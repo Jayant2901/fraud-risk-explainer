@@ -38,6 +38,20 @@ solving a real gap in that standard approach:
    See [Does the cost-optimal threshold hold up under different cost
    assumptions?](#does-the-cost-optimal-threshold-hold-up-under-different-cost-assumptions)
 
+   The live REVIEW/BLOCK decision boundaries `decide_action()` actually
+   gates transactions with (see point 4 below) are themselves derived
+   from this same cost analysis by `train_model.py`, not hardcoded:
+   `review_threshold` is the cost-optimal threshold at the default cost
+   assumptions (currently **34.0** on the 0-100 risk-score scale), and
+   `block_threshold` is the cost-optimal threshold recomputed with
+   `avg_fp_cost` scaled 6x (`BLOCK_FP_COST_MULTIPLIER`, currently
+   **71.0**) — i.e. "only auto-block when the model would still flag it
+   even if false positives were far more expensive than assumed."
+   Both are saved to `models/decision_thresholds.joblib` and loaded by
+   the live API, the offline ablation/consistency scripts, and the LLM
+   system prompt alike (`src/decision_rules.py`), so none of them can
+   silently drift apart after a retrain.
+
 3. **Structured LLM output, not scraped JSON.** `src/llm_agent.py` calls
    Gemini (`gemini-3.6-flash`) through the Google Gen AI SDK's
    structured outputs (`response_schema=RiskVerdict`, a Pydantic model,
@@ -576,16 +590,16 @@ device/address graph features from Phase 3) — not invented:
 
 | | Baseline (no escalation) | Escalation-adjusted (live system) |
 |---|---|---|
-| Recall (frauds flagged) | 0.8578 (3,486 / 4,064) | 0.8873 (3,606 / 4,064) |
-| False-flag rate (legit txns flagged) | 0.0922 (10,515 / 114,044) | 0.1689 (19,266 / 114,044) |
+| Recall (frauds flagged) | 0.8834 (3,590 / 4,064) | 0.9097 (3,697 / 4,064) |
+| False-flag rate (legit txns flagged) | 0.1167 (13,312 / 114,044) | 0.2004 (22,857 / 114,044) |
 
-Escalation catches **120 more fraudulent transactions** than the raw
-score alone (+2.95 points of recall) — but it does so by flagging
-**8,751 more legitimate transactions** (+7.67 points of false-flag
+Escalation catches **107 more fraudulent transactions** than the raw
+score alone (+2.63 points of recall) — but it does so by flagging
+**9,545 more legitimate transactions** (+8.37 points of false-flag
 rate). Isolating just the transactions where escalation history is what
 pushed the action higher than the raw score alone would have
-(`escalated_due_to_history == True`): there were **12,087** such flips,
-and only **389** of them (3.22%) were actually fraud.
+(`escalated_due_to_history == True`): there were **13,473** such flips,
+and only **336** of them (2.49%) were actually fraud.
 
 **Honest read:** at the current thresholds (`WATCH_THRESHOLD = 2`,
 `ELEVATED_THRESHOLD = 4` in `src/entity_memory.py`), escalation is a net
@@ -718,11 +732,14 @@ same case multiple times. `src/consistency_analysis.py` measures that
 directly, in two parts:
 
 **Part A — boundary fragility** (free, full test set, no API calls): of
-the 13,980 transactions the deterministic rules flag REVIEW/BLOCK,
-**1,433 (10.25%)** sit within ±2 points of a decision boundary (40 or
-80) — close calls where a couple of points of model noise could have
-gone the other way. This is the automated analog of "this case was
-genuinely ambiguous," measured cheaply across the entire test set.
+the 16,871 transactions the deterministic rules flag REVIEW/BLOCK,
+**1,778 (10.54%)** sit within ±2 points of a decision boundary (the
+real, cost-derived review/block thresholds computed by
+`train_model.py` and loaded from `models/decision_thresholds.joblib` —
+currently 34.0 and 71.0, see `src/decision_rules.py`) — close calls
+where a couple of points of model noise could have gone the other way.
+This is the automated analog of "this case was genuinely ambiguous,"
+measured cheaply across the entire test set.
 
 **Part B — LLM self-consistency and cross-agreement** (real Gemini API
 calls): a deliberate 12-transaction × 2-escalation-context sample (24
@@ -738,43 +755,42 @@ yourself with `python src/consistency_analysis.py` (needs a real
 real surfaced something worth reporting on its own — Gemini's free tier
 for `gemini-3.6-flash` turned out to enforce a **20-requests-PER-DAY**
 quota (`GenerateRequestsPerDayPerProjectPerModel-FreeTier`), not the
-per-minute rate limit a free tier more commonly implies. The first 20
-calls (4 of the 24 pairs — both escalation contexts for the first 2
-sampled `clear_allow` transactions) went through; every call after that
-hit `429 RESOURCE_EXHAUSTED` for the rest of the day. The fallback-
-detection logic did exactly its job here: those 20 exhausted pairs are
-correctly reported as `insufficient_data` (0 valid responses each,
-excluded from every aggregate), not silently counted as disagreement —
-which is the entire point of `is_fallback_response()` and the
-`MIN_VALID_RESPONSES` guard.
-
-Of the 4 pairs that did get real data:
-
-| Band | Escalation | Risk score | Modal action | Self-consistency | Cross-agreement |
-|---|---|---|---|---|---|
-| clear_allow | NORMAL | 0.1 | ALLOW | 100% | yes |
-| clear_allow | ELEVATED | 0.1 | REVIEW | 100% | yes |
-| clear_allow | NORMAL | 12.6 | ALLOW | 100% | yes |
-| clear_allow | ELEVATED | 12.6 | REVIEW | 100% | yes |
+per-minute rate limit a free tier more commonly implies. An earlier run
+that same day (before Phase A's threshold rederivation) got through the
+first 20 calls before hitting the daily cap; by the time this project's
+decision thresholds moved from the hardcoded 40/80 to the real,
+cost-derived 34.0/71.0 and this script was re-run to regenerate the
+report against the new boundaries and band names, that day's 20-call
+quota was already spent — so this run's 24 pairs (120 attempted calls)
+all hit `429 RESOURCE_EXHAUSTED` immediately. The fallback-detection
+logic did exactly its job here: all 24 pairs are correctly reported as
+`insufficient_data` (0 valid responses each, excluded from every
+aggregate), not silently counted as disagreement — which is the entire
+point of `is_fallback_response()` and the `MIN_VALID_RESPONSES` guard.
+See `models/consistency_report.txt` for the full, real per-pair output.
 
 **Honest read, on two levels.** On the question this phase actually set
-out to answer: within the one band that got real data, the LLM agent
-was perfectly self-consistent (100% across all 5 repeated calls, every
-time) and perfectly aligned with the deterministic rules — including
-correctly reasoning that an `ELEVATED` escalation state should push a
-low raw score from ALLOW to REVIEW, exactly as the system prompt asks.
-That's a genuine, if narrow, positive finding: it should not be spun as
-"proof the model never disagrees with itself" (the interesting
-hypothesis from the original design — that boundary cases and
-`ELEVATED` escalation would show *more* self-disagreement — was never
-actually tested, since the near-40, near-80, and clear-BLOCK bands got
-zero real API data before the quota ran out). On the question of
-whether this whole approach is practically deployable on a free tier:
-**no, not at this design's scale** — a 20-calls/day cap means the full
-24-pair × 5-call design would take roughly six separate days to
-complete on the free tier alone, which is itself a legitimate, useful
-finding for anyone considering this architecture for a real consistency-
-monitoring pipeline, not a footnote to apologize for.
+out to answer (does self-consistency hold up near the real decision
+boundaries and under `ELEVATED` escalation?): this specific run has
+**no real data to answer that with** — every one of the 24 pairs was
+quota-exhausted before a single valid response came back. That's a real
+null result, not a positive or negative finding, and it should be read
+as exactly that rather than papered over. (A prior run the same day,
+before the threshold rederivation, did get 4 pairs of real data — all
+in the `clear_allow` band — showing perfect 100% self-consistency and
+cross-agreement, including correctly escalating a low raw score from
+ALLOW to REVIEW under `ELEVATED` history; that data point still stands
+on its own merits, but it predates and doesn't use the current 34.0/71.0
+thresholds, so it isn't reproduced here as if it were.) On the question
+of whether this whole approach is practically deployable on a free
+tier: **no, not at this design's scale** — a 20-calls/day cap means the
+full 24-pair × 5-call design (120 calls) takes at minimum six separate
+days to complete on the free tier alone, and re-running the script more
+than once in a day (as happened here, to pick up a code change) can
+burn the entire day's quota before the analysis itself gets a single
+real data point. That is itself a legitimate, useful finding for anyone
+considering this architecture for a real consistency-monitoring
+pipeline, not a footnote to apologize for.
 
 ## Methodology notes (for the writeup / judges)
 

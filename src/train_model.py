@@ -5,10 +5,24 @@ Run:
     python src/train_model.py
 
 Outputs:
-    models/risk_model.joblib       - trained XGBoost classifier
-    models/feature_cols.joblib     - ordered list of feature names used
-    models/optimal_threshold.joblib - cost-optimal decision threshold
-    models/eval_report.txt         - AUC/PR-AUC + cost-based analysis
+    models/risk_model.joblib          - trained XGBoost classifier
+    models/feature_cols.joblib        - ordered list of feature names used
+    models/optimal_threshold.joblib   - cost-optimal decision threshold (0-1
+                                         probability scale) — the single
+                                         binary "above/below cost-optimal"
+                                         point RiskExplainer's above_threshold
+                                         field is based on. Kept for that
+                                         purpose alongside decision_thresholds
+                                         below, which is a DIFFERENT, related
+                                         concept: the live system's two-tier
+                                         REVIEW/BLOCK boundaries.
+    models/decision_thresholds.joblib - {"review": float, "block": float} on
+                                         the 0-100 risk-score scale — what
+                                         decision_rules.decide_action()
+                                         actually gates transactions with.
+                                         See BLOCK_FP_COST_MULTIPLIER below
+                                         for exactly how "block" is derived.
+    models/eval_report.txt            - AUC/PR-AUC + cost-based analysis
 """
 import joblib
 import numpy as np
@@ -23,6 +37,25 @@ FEATURES_PATH = "models/feature_cols.joblib"
 THRESHOLD_PATH = "models/optimal_threshold.joblib"
 CATEGORIES_PATH = "models/categorical_categories.joblib"
 REPORT_PATH = "models/eval_report.txt"
+DECISION_THRESHOLDS_PATH = "models/decision_thresholds.joblib"
+
+# The REVIEW threshold is just optimal_threshold()'s result under the
+# default cost assumptions — the point where flagging first becomes
+# worth it (see cost_analysis.DEFAULT_AVG_FRAUD_LOSS/DEFAULT_AVG_FP_COST).
+#
+# BLOCK needs a threshold that's actually HIGHER than that ("only act on
+# high confidence"). Scaling avg_fraud_loss up — missing fraud made more
+# expensive — moves optimal_threshold() DOWN, not up: it makes the model
+# want to catch more fraud, i.e. flag MORE aggressively, the opposite of
+# what a stricter tier needs. Scaling avg_fp_cost up instead does what we
+# want: it says a false BLOCK (a legitimate transaction rejected
+# outright, not just flagged for review) is assumed to cost far more
+# than a false REVIEW — e.g. lost customer trust/churn on a hard
+# rejection vs. mild friction on a review — which is exactly the "only
+# act on high confidence" framing this tier needs. This multiplier is a
+# documented assumption, the same way DEFAULT_SENSITIVITY_MULTIPLIERS is
+# — revisit it if a retrain ever collapses the two tiers together.
+BLOCK_FP_COST_MULTIPLIER = 6.0
 
 
 def train(df=None):
@@ -82,6 +115,27 @@ def train(df=None):
     optimal_t = cost_result["optimal_threshold"]
     optimal_report = classification_report(y_test, (y_proba >= optimal_t).astype(int), digits=4)
 
+    # --- Live decision boundaries (0-100 risk-score scale), derived from
+    # the same cost analysis rather than hardcoded — see
+    # BLOCK_FP_COST_MULTIPLIER above for why BLOCK uses a scaled-up
+    # avg_fp_cost rather than a scaled-up avg_fraud_loss.
+    review_threshold = round(optimal_t * 100, 1)
+    block_cost_result = optimal_threshold(
+        y_test, y_proba,
+        avg_fraud_loss=DEFAULT_AVG_FRAUD_LOSS,
+        avg_fp_cost=DEFAULT_AVG_FP_COST * BLOCK_FP_COST_MULTIPLIER,
+    )
+    block_threshold = round(block_cost_result["optimal_threshold"] * 100, 1)
+    if block_threshold <= review_threshold:
+        # Report reality, don't force it — an honest "these collapsed"
+        # is more useful than a silently hand-picked number.
+        print(
+            f"WARNING: derived block_threshold ({block_threshold}) did not come out "
+            f"above review_threshold ({review_threshold}) — BLOCK_FP_COST_MULTIPLIER "
+            f"({BLOCK_FP_COST_MULTIPLIER}) may need revisiting."
+        )
+    decision_thresholds = {"review": review_threshold, "block": block_threshold}
+
     summary = (
         f"ROC-AUC: {auc:.4f}\n"
         f"Average Precision (PR-AUC): {ap:.4f}\n\n"
@@ -92,7 +146,12 @@ def train(df=None):
         f"=== Cost-optimal threshold ({optimal_t}) ===\n{optimal_report}\n"
         f"Estimated cost at optimal threshold: Rs {cost_result['optimal_total_cost']:,.0f}\n"
         f"Estimated savings vs default: Rs {cost_result['estimated_savings']:,.0f} "
-        f"({cost_result['estimated_savings_pct']}%)\n"
+        f"({cost_result['estimated_savings_pct']}%)\n\n"
+        f"=== Live decision boundaries (derived, 0-100 risk-score scale) ===\n"
+        f"REVIEW threshold: {review_threshold} (= cost-optimal threshold under default "
+        f"cost assumptions, x100)\n"
+        f"BLOCK threshold:  {block_threshold} (= cost-optimal threshold with avg_fp_cost "
+        f"scaled {BLOCK_FP_COST_MULTIPLIER}x, x100 — 'only act on high confidence')\n"
     )
     print(summary)
 
@@ -103,10 +162,12 @@ def train(df=None):
     joblib.dump(feature_cols, FEATURES_PATH)
     joblib.dump(optimal_t, THRESHOLD_PATH)
     joblib.dump(categories_map, CATEGORIES_PATH)
+    joblib.dump(decision_thresholds, DECISION_THRESHOLDS_PATH)
     print(f"\nSaved model -> {MODEL_PATH}")
     print(f"Saved feature list -> {FEATURES_PATH}")
     print(f"Saved cost-optimal threshold -> {THRESHOLD_PATH}")
     print(f"Saved categorical category sets -> {CATEGORIES_PATH}")
+    print(f"Saved live decision thresholds -> {DECISION_THRESHOLDS_PATH}")
     print(f"Saved eval report -> {REPORT_PATH}")
 
 

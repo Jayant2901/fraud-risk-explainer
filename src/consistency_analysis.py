@@ -15,7 +15,8 @@ case-level judgment consistency.
 Two parts:
   A. Boundary fragility (free, full test set, no API calls): of the
      transactions the deterministic rules would flag REVIEW/BLOCK, what
-     fraction sit within +/-2 points of a decision boundary (40 or 80)
+     fraction sit within +/-2 points of a decision boundary (the real,
+     cost-derived review/block thresholds — see decision_rules.py)
      — a cheap, statistically solid proxy for "how many of these
      decisions were close calls."
   B. LLM self-consistency and cross-agreement (COSTS REAL API QUOTA):
@@ -48,7 +49,7 @@ sys.path.append(os.path.dirname(__file__))
 import joblib
 
 from escalation_ablation import load_test_set
-from decision_rules import decide_action
+from decision_rules import decide_action, load_decision_thresholds
 from entity_memory import _compute_escalation_state, ELEVATED_THRESHOLD
 from risk_explainer import RiskExplainer
 from llm_agent import RiskExplainerAgent
@@ -60,16 +61,35 @@ TEXT_REPORT_PATH = "models/consistency_report.txt"
 JSON_REPORT_PATH = "models/consistency_report.json"
 
 # --- Part A ---
+# Default boundaries for is_near_boundary()/compute_boundary_fragility()
+# when the caller doesn't pass real ones in — matches
+# decision_rules.py's own 40.0/80.0 fallback. run() below always passes
+# the real, loaded thresholds explicitly instead of relying on this
+# default, so this exists purely as a documented, testable fallback (and
+# what the unit tests exercise), not the operational source of truth.
 BOUNDARIES = (40.0, 80.0)
 BOUNDARY_TOLERANCE = 2.0
 
 # --- Part B ---
-SCORE_BANDS = [
-    ("clear_allow", 0.0, 20.0),
-    ("near_40_boundary", 35.0, 45.0),
-    ("near_80_boundary", 75.0, 85.0),
-    ("clear_block", 90.0, 100.0),
-]
+# Half-width of the "near a boundary" sampling window, in risk-score
+# points either side of the real review/block threshold.
+BOUNDARY_BAND_HALF_WIDTH = 5.0
+
+
+def score_bands(boundaries=BOUNDARIES) -> list:
+    """Named (band_name, lo, hi) score ranges to sample from. The two
+    boundary bands are centered on the REAL, cost-derived thresholds
+    (not hardcoded 40/80) so this always samples close calls relative to
+    what the live system actually decides with."""
+    review, block = boundaries
+    return [
+        ("clear_allow", 0.0, 20.0),
+        ("near_review_boundary", review - BOUNDARY_BAND_HALF_WIDTH, review + BOUNDARY_BAND_HALF_WIDTH),
+        ("near_block_boundary", block - BOUNDARY_BAND_HALF_WIDTH, block + BOUNDARY_BAND_HALF_WIDTH),
+        ("clear_block", 90.0, 100.0),
+    ]
+
+
 SAMPLES_PER_BAND = 3
 CALLS_PER_PAIR = 5
 CALL_DELAY_SECONDS = 4.5  # sequential, well under the free-tier rate limit
@@ -83,11 +103,11 @@ def is_near_boundary(risk_score: float, boundaries=BOUNDARIES, tolerance: float 
     return any(abs(risk_score - b) <= tolerance for b in boundaries)
 
 
-def compute_boundary_fragility(flagged_risk_scores: list) -> dict:
+def compute_boundary_fragility(flagged_risk_scores: list, boundaries=BOUNDARIES) -> dict:
     """flagged_risk_scores: risk scores of transactions the deterministic,
     no-escalation decision already flagged REVIEW/BLOCK."""
     n = len(flagged_risk_scores)
-    n_near = sum(1 for s in flagged_risk_scores if is_near_boundary(s))
+    n_near = sum(1 for s in flagged_risk_scores if is_near_boundary(s, boundaries=boundaries))
     return {
         "n_flagged": int(n),
         "n_near_boundary": int(n_near),
@@ -169,7 +189,7 @@ def elevated_escalation(entity_id: str, risk_score: float) -> dict:
     return _compute_escalation_state(entity_id, history)
 
 
-def select_sample(test_df, samples_per_band: int = SAMPLES_PER_BAND) -> list:
+def select_sample(test_df, boundaries=BOUNDARIES, samples_per_band: int = SAMPLES_PER_BAND) -> list:
     """Deterministic (dataset-order-based, no randomness) selection of
     samples_per_band real transactions per score band, so a re-run picks
     the identical sample."""
@@ -179,7 +199,7 @@ def select_sample(test_df, samples_per_band: int = SAMPLES_PER_BAND) -> list:
     risk_scores = proba * 100
 
     picks = []
-    for band_name, lo, hi in SCORE_BANDS:
+    for band_name, lo, hi in score_bands(boundaries):
         mask = (risk_scores >= lo) & (risk_scores <= hi)
         row_indices = test_df.index[mask][:samples_per_band]
         for i in row_indices:
@@ -187,7 +207,9 @@ def select_sample(test_df, samples_per_band: int = SAMPLES_PER_BAND) -> list:
     return picks
 
 
-def build_report(part_a: dict, pair_results: list) -> str:
+def build_report(part_a: dict, pair_results: list, boundaries=BOUNDARIES, bands=None) -> str:
+    if bands is None:
+        bands = score_bands(boundaries)
     lines = [
         "Reviewer consistency analysis",
         "===============================",
@@ -195,7 +217,8 @@ def build_report(part_a: dict, pair_results: list) -> str:
         "Part A -- Boundary fragility (deterministic rules, full test set, no API calls)",
         "----------------------------------------------------------------------------------",
         f"Flagged (REVIEW/BLOCK) transactions: {part_a['n_flagged']:,}",
-        f"Within +/-{BOUNDARY_TOLERANCE:.0f} points of a decision boundary (40 or 80): "
+        f"Within +/-{BOUNDARY_TOLERANCE:.0f} points of a decision boundary "
+        f"({boundaries[0]:.1f} or {boundaries[1]:.1f}): "
         f"{part_a['n_near_boundary']:,} ({part_a['fraction_near_boundary']:.2%})",
         "",
         "Part B -- LLM self-consistency and cross-agreement (real Gemini API calls)",
@@ -203,7 +226,7 @@ def build_report(part_a: dict, pair_results: list) -> str:
         f"{CALLS_PER_PAIR} calls per (transaction, escalation context) pair, "
         f"{len(pair_results)} pairs, up to {len(pair_results) * CALLS_PER_PAIR} total API calls.",
         "",
-        f"{'band':<18}{'context':<10}{'risk':>7}  {'status':<18}{'valid':>6}{'excl':>6}"
+        f"{'band':<22}{'context':<10}{'risk':>7}  {'status':<18}{'valid':>6}{'excl':>6}"
         f"{'modal':>8}{'self-cons.':>11}{'cross-agree':>13}",
     ]
     for r in pair_results:
@@ -211,7 +234,7 @@ def build_report(part_a: dict, pair_results: list) -> str:
         cons_str = "-" if r["self_consistency_rate"] is None else f"{r['self_consistency_rate']:.2f}"
         cross_str = "-" if r["cross_agreement"] is None else str(r["cross_agreement"])
         lines.append(
-            f"{r['band']:<18}{r['escalation_context']:<10}{r['risk_score']:>7.1f}  {r['status']:<18}"
+            f"{r['band']:<22}{r['escalation_context']:<10}{r['risk_score']:>7.1f}  {r['status']:<18}"
             f"{r['n_valid']:>6}{r['n_excluded_fallback']:>6}"
             f"{modal_str:>8}{cons_str:>11}{cross_str:>13}"
         )
@@ -228,7 +251,7 @@ def build_report(part_a: dict, pair_results: list) -> str:
         lines.append(f"Overall cross-agreement rate: {overall_cross:.4f}")
         lines.append("")
 
-        for band_name, _, _ in SCORE_BANDS:
+        for band_name, _, _ in bands:
             band_pairs = [r for r in ok_pairs if r["band"] == band_name]
             if band_pairs:
                 bc = sum(r["self_consistency_rate"] for r in band_pairs) / len(band_pairs)
@@ -256,23 +279,31 @@ def run():
     print("Loading test set and trained model...")
     test_df = load_test_set()
 
+    thresholds = load_decision_thresholds()
+    boundaries = (thresholds["review"], thresholds["block"])
+    print(f"Using decision thresholds: {thresholds}")
+
     model = joblib.load(MODEL_PATH)
     feature_cols = joblib.load(FEATURES_PATH)
     proba = model.predict_proba(test_df[feature_cols])[:, 1]
     risk_scores = proba * 100
 
     print("=== Part A: boundary fragility (no API calls) ===")
-    baseline_actions = [decide_action(float(s), {"state": "NORMAL"})["action"] for s in risk_scores]
+    baseline_actions = [
+        decide_action(float(s), {"state": "NORMAL"}, thresholds["review"], thresholds["block"])["action"]
+        for s in risk_scores
+    ]
     flagged_scores = [float(s) for s, a in zip(risk_scores, baseline_actions) if a != "ALLOW"]
-    part_a = compute_boundary_fragility(flagged_scores)
+    part_a = compute_boundary_fragility(flagged_scores, boundaries=boundaries)
     print(f"Part A: {part_a}")
 
     print("=== Part B: LLM self-consistency (REAL Gemini API calls) ===")
-    picks = select_sample(test_df)
-    print(f"Selected {len(picks)} sample transactions across {len(SCORE_BANDS)} score bands")
+    bands = score_bands(boundaries)
+    picks = select_sample(test_df, boundaries)
+    print(f"Selected {len(picks)} sample transactions across {len(bands)} score bands")
 
     explainer = RiskExplainer()
-    agent = RiskExplainerAgent()
+    agent = RiskExplainerAgent(review_threshold=thresholds["review"], block_threshold=thresholds["block"])
 
     pair_results = []
     for pick in picks:
@@ -288,7 +319,9 @@ def run():
             ("ELEVATED", elevated_escalation(entity_id, risk_score)),
         ]
         for context_name, escalation in contexts:
-            deterministic_action = decide_action(risk_score, escalation)["action"]
+            deterministic_action = decide_action(
+                risk_score, escalation, thresholds["review"], thresholds["block"]
+            )["action"]
 
             verdicts = []
             for call_i in range(CALLS_PER_PAIR):
@@ -306,13 +339,13 @@ def run():
             })
             pair_results.append(result)
             print(
-                f"  {pick['band']:<18} {context_name:<8} risk={risk_score:6.1f} -> "
+                f"  {pick['band']:<22} {context_name:<8} risk={risk_score:6.1f} -> "
                 f"{result['status']} modal={result['modal_action']} "
                 f"consistency={result['self_consistency_rate']} "
                 f"cross_agree={result['cross_agreement']} excluded={result['n_excluded_fallback']}"
             )
 
-    report = build_report(part_a, pair_results)
+    report = build_report(part_a, pair_results, boundaries=boundaries, bands=bands)
     print(report)
 
     with open(TEXT_REPORT_PATH, "w", encoding="utf-8") as f:

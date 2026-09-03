@@ -50,7 +50,7 @@ from slowapi.middleware import SlowAPIMiddleware
 from slowapi.util import get_remote_address
 
 from logging_utils import configure_logging, RequestIDMiddleware
-from decision_rules import decide_action
+from decision_rules import decide_action, load_decision_thresholds
 from risk_explainer import RiskExplainer
 from llm_agent import RiskExplainerAgent
 from entity_memory import create_entity_memory, _compute_escalation_state
@@ -199,8 +199,18 @@ def get_explainer() -> RiskExplainer:
 
 
 @lru_cache(maxsize=1)
+def get_decision_thresholds() -> dict:
+    """{"review": float, "block": float} — loaded once at process
+    startup, same singleton pattern as get_explainer()/get_agent(), from
+    the real values train_model.py derived from the cost analysis. See
+    decision_rules.load_decision_thresholds()."""
+    return load_decision_thresholds()
+
+
+@lru_cache(maxsize=1)
 def get_agent() -> RiskExplainerAgent:
-    return RiskExplainerAgent()
+    thresholds = get_decision_thresholds()
+    return RiskExplainerAgent(review_threshold=thresholds["review"], block_threshold=thresholds["block"])
 
 
 SAMPLE_DATA_CACHE_PATH = "models/sample_data_cache.pkl"
@@ -340,18 +350,19 @@ def score(
     result = explainer.score_transaction(txn)
 
     escalation_before = _memory.get_escalation_state(req.entity_id)
+    thresholds = get_decision_thresholds()
 
     # The decision that actually gates the transaction is made right here,
     # synchronously (score + SHAP + rules, ~100-130ms measured locally) —
     # it does not wait on the LLM. record_verdict() runs immediately too,
     # so escalation state for this entity's NEXT transaction is already
     # correct.
-    decision = decide_action(result["risk_score"], escalation_before)
+    decision = decide_action(result["risk_score"], escalation_before, thresholds["review"], thresholds["block"])
     # What the system would have done with no entity memory at all — kept
     # alongside the real decision so the review queue's metrics can split
     # reviewer precision by whether escalation is what triggered the flag
     # (the live version of src/escalation_ablation.py's offline comparison).
-    baseline_decision = decide_action(result["risk_score"], {"state": "NORMAL"})
+    baseline_decision = decide_action(result["risk_score"], {"state": "NORMAL"}, thresholds["review"], thresholds["block"])
     _memory.record_verdict(req.entity_id, decision["action"], result["risk_score"])
 
     verdict_id = str(uuid.uuid4())
@@ -406,11 +417,12 @@ def score_custom(
         escalation_before = _memory.get_escalation_state(req.attach_to_entity_id)
     else:
         escalation_before = _compute_escalation_state(None, [])
+    thresholds = get_decision_thresholds()
 
     # Same decide_action()/baseline pipeline /api/score uses — a custom
     # transaction can never gate itself differently than a replayed one.
-    decision = decide_action(result["risk_score"], escalation_before)
-    baseline_decision = decide_action(result["risk_score"], {"state": "NORMAL"})
+    decision = decide_action(result["risk_score"], escalation_before, thresholds["review"], thresholds["block"])
+    baseline_decision = decide_action(result["risk_score"], {"state": "NORMAL"}, thresholds["review"], thresholds["block"])
 
     if req.attach_to_entity_id:
         _memory.record_verdict(req.attach_to_entity_id, decision["action"], result["risk_score"])

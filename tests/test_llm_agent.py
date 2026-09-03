@@ -10,6 +10,7 @@ from google.genai import errors
 from llm_agent import (
     RiskExplainerAgent,
     RiskVerdict,
+    build_system_prompt,
     build_user_prompt,
     _is_valid_response,
     _sanitize_field,
@@ -65,6 +66,39 @@ class TestBuildUserPrompt(unittest.TestCase):
     def test_missing_escalation_keys_use_defaults(self):
         prompt = build_user_prompt(50, TOP_FACTORS, {})
         self.assertIn("Escalation state: NORMAL", prompt)
+
+
+class TestBuildSystemPrompt(unittest.TestCase):
+    """Regression coverage for the threshold-drift bug this was written
+    to prevent: the system prompt used to hardcode "risk_score >= 80"
+    etc. as English sentences, independent of whatever
+    decision_rules.decide_action() actually gated with. A retrain that
+    moved the real thresholds could silently leave the LLM instructed to
+    follow stale ones."""
+
+    def test_reflects_a_non_default_threshold_pair(self):
+        prompt = build_system_prompt(review_threshold=25.0, block_threshold=65.0)
+        self.assertIn("25.0", prompt)
+        self.assertIn("65.0", prompt)
+        self.assertNotIn(">= 80", prompt)
+        self.assertNotIn("< 40", prompt)
+
+    def test_defaults_match_decision_rules_fallback(self):
+        prompt = build_system_prompt()
+        self.assertIn("40.0", prompt)
+        self.assertIn("80.0", prompt)
+
+    def test_agent_builds_its_system_prompt_from_the_thresholds_passed_to_it(self):
+        verdict = RiskVerdict(explanation="fine", action="ALLOW",
+                               escalated_due_to_history=False, rationale="low risk")
+        client = make_client(parsed=verdict)
+        agent = RiskExplainerAgent(client=client, review_threshold=25.0, block_threshold=65.0)
+        agent.explain(10, TOP_FACTORS, None)
+
+        _, kwargs = client.models.generate_content.call_args
+        system_instruction = kwargs["config"].system_instruction
+        self.assertIn("25.0", system_instruction)
+        self.assertIn("65.0", system_instruction)
 
 
 class TestIsValidResponse(unittest.TestCase):

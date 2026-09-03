@@ -37,7 +37,7 @@ import pandas as pd
 import joblib
 
 from data_utils import load_raw_data, engineer_features
-from decision_rules import decide_action
+from decision_rules import decide_action, load_decision_thresholds
 from entity_memory import EntityRiskMemory
 
 MODEL_PATH = "models/risk_model.joblib"
@@ -71,11 +71,20 @@ def score_test_set(test_df: pd.DataFrame) -> pd.Series:
     return pd.Series(proba * 100, index=test_df.index, name="risk_score").round(1)
 
 
-def replay(test_df: pd.DataFrame, risk_scores: pd.Series) -> pd.DataFrame:
+def replay(test_df: pd.DataFrame, risk_scores: pd.Series, thresholds: dict | None = None) -> pd.DataFrame:
     """Walks the test set in time order through a fresh EntityRiskMemory,
     recording both decisions per transaction. Returns a DataFrame with
     one row per transaction: is_fraud, risk_score, baseline_action,
-    adjusted_action, escalated_due_to_history."""
+    adjusted_action, escalated_due_to_history.
+
+    thresholds: {"review": float, "block": float} — the SAME real,
+    derived boundaries the live API decides with (see
+    decision_rules.load_decision_thresholds()). Defaults to loading them
+    fresh if not passed, so this mirrors decide_action() exactly rather
+    than restating 40/80 independently."""
+    if thresholds is None:
+        thresholds = load_decision_thresholds()
+
     memory = EntityRiskMemory()
     rows = []
 
@@ -85,8 +94,8 @@ def replay(test_df: pd.DataFrame, risk_scores: pd.Series) -> pd.DataFrame:
 
         escalation_before = memory.get_escalation_state(entity_id)
 
-        baseline_decision = decide_action(risk_score, {"state": "NORMAL"})
-        adjusted_decision = decide_action(risk_score, escalation_before)
+        baseline_decision = decide_action(risk_score, {"state": "NORMAL"}, thresholds["review"], thresholds["block"])
+        adjusted_decision = decide_action(risk_score, escalation_before, thresholds["review"], thresholds["block"])
 
         # Record the REAL (escalation-adjusted) action, exactly as
         # api/main.py's /api/score does — so escalation state accumulates
@@ -193,11 +202,14 @@ def run():
     test_df = load_test_set()
     print(f"Test set: {len(test_df):,} transactions (chronological, matches train_model.py's split)")
 
+    thresholds = load_decision_thresholds()
+    print(f"Using decision thresholds: {thresholds}")
+
     print("Scoring test set with the trained model...")
     risk_scores = score_test_set(test_df)
 
     print("Replaying test set through EntityRiskMemory in time order...")
-    replay_df = replay(test_df, risk_scores)
+    replay_df = replay(test_df, risk_scores, thresholds)
 
     report = build_report(replay_df)
     print(report)
