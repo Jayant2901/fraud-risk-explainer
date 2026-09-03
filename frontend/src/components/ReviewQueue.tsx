@@ -8,8 +8,11 @@ import {
   buttonBase,
   buttonLabel,
   focusRing,
+  pressable,
   statusBadgeClass,
   statusDotClass,
+  statusTextClass,
+  surface,
   typeScale,
 } from "../theme";
 
@@ -19,18 +22,18 @@ function formatPct(p: number | null): string {
 
 // Escalating visual urgency as a pending item ages, so an old,
 // forgotten item stands out from one that just landed.
-const AGE_BAND_AMBER_MS = 60 * 60 * 1000; // 1 hour
-const AGE_BAND_RED_MS = 4 * 60 * 60 * 1000; // 4 hours
+const AGE_BAND_WARNING_MS = 60 * 60 * 1000; // 1 hour
+const AGE_BAND_DANGER_MS = 4 * 60 * 60 * 1000; // 4 hours
 
 function ageLabel(createdAt: string): { text: string; className: string } {
   const ms = Date.now() - new Date(createdAt).getTime();
   const minutes = Math.max(0, Math.round(ms / 60000));
   const text = minutes < 60 ? `${minutes}m ago` : `${Math.round(minutes / 60)}h ago`;
   const className =
-    ms >= AGE_BAND_RED_MS
-      ? "text-app-danger"
-      : ms >= AGE_BAND_AMBER_MS
-        ? "text-amber-400"
+    ms >= AGE_BAND_DANGER_MS
+      ? statusTextClass("danger")
+      : ms >= AGE_BAND_WARNING_MS
+        ? statusTextClass("warning")
         : "text-app-faint";
   return { text, className };
 }
@@ -141,6 +144,35 @@ export default function ReviewQueue() {
 
       {error && <p className="text-sm text-app-danger">{error}</p>}
 
+      {/* Queue health at a glance. Derived from the same `items`/`metrics`
+          state the list below renders, so disposing an item updates these
+          on the existing refresh — no second fetch, no stale flash. */}
+      {metrics && (
+        <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
+          {[
+            { label: "In queue", value: items.length + metrics.total_disposed, tone: "text-app-ink" },
+            { label: "Pending", value: items.length, tone: "text-app-ink" },
+            {
+              label: "Confirmed fraud",
+              value: metrics.confirmed_fraud_count,
+              tone: statusTextClass("danger"),
+            },
+            {
+              label: "False positive",
+              value: metrics.false_positive_count,
+              tone: statusTextClass("success"),
+            },
+          ].map((stat) => (
+            <div key={stat.label} className={`${surface} p-4`}>
+              <p className={`${typeScale.caption} uppercase tracking-wide`}>{stat.label}</p>
+              <p className={`font-mono text-2xl font-semibold tabular-nums mt-1 ${stat.tone}`}>
+                {loading ? "…" : stat.value}
+              </p>
+            </div>
+          ))}
+        </div>
+      )}
+
       {metrics && (
         <div>
           <h3 className={typeScale.subTitle}>
@@ -212,14 +244,14 @@ export default function ReviewQueue() {
                     <button
                       onClick={() => handleDispose(item.verdict_id, "CONFIRMED_FRAUD")}
                       disabled={disposing === item.verdict_id}
-                      className={`text-xs font-medium px-3 py-1.5 rounded-md bg-app-danger/10 border border-app-danger/30 text-app-danger hover:bg-app-danger/20 ${buttonLabel} ${buttonBase}`}
+                      className={`text-xs font-medium px-3 py-1.5 rounded-md bg-sys-red/10 border border-sys-red/30 text-sys-red hover:bg-sys-red/20 ${pressable} ${buttonLabel} ${buttonBase}`}
                     >
                       Confirm Fraud
                     </button>
                     <button
                       onClick={() => handleDispose(item.verdict_id, "FALSE_POSITIVE")}
                       disabled={disposing === item.verdict_id}
-                      className={`text-xs font-medium px-3 py-1.5 rounded-md bg-emerald-500/10 border border-emerald-500/30 text-emerald-300 hover:bg-emerald-500/20 ${buttonLabel} ${buttonBase}`}
+                      className={`text-xs font-medium px-3 py-1.5 rounded-md bg-sys-green/10 border border-sys-green/30 text-sys-green hover:bg-sys-green/20 ${pressable} ${buttonLabel} ${buttonBase}`}
                     >
                       Mark False Positive
                     </button>

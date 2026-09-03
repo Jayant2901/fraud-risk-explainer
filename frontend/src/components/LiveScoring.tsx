@@ -1,6 +1,8 @@
 import { useEffect, useMemo, useState } from "react";
 import { api, type EscalationState, type ExplanationResult, type ScoreResult, type TxnSummary } from "../api/client";
 import { AlertTriangleIcon } from "./icons";
+import RiskGauge from "./RiskGauge";
+import { useAnimatedNumber, useTypewriter } from "../hooks";
 import {
   accentBg,
   accentBorder,
@@ -8,8 +10,11 @@ import {
   actionStatus,
   buttonBase,
   buttonLabel,
+  easing,
   escalationStatus,
   focusRing,
+  noticeClass,
+  pressable,
   statusBadgeClass,
   statusDotClass,
   statusTextClass,
@@ -17,10 +22,26 @@ import {
   typeScale,
 } from "../theme";
 
-function riskBand(score: number) {
-  if (score >= 80) return { label: "HIGH RISK (model)", status: "danger" as const };
-  if (score >= 40) return { label: "MEDIUM RISK (model)", status: "warning" as const };
-  return { label: "LOW RISK (model)", status: "success" as const };
+// Reveals the already-complete LLM response as if it were arriving.
+// Sequential: the rationale only starts once the explanation has fully
+// landed, which reads more naturally than two interleaved streams.
+function ExplanationReveal({
+  explanation,
+  rationale,
+}: {
+  explanation: string;
+  rationale: string;
+}) {
+  const typedExplanation = useTypewriter(explanation);
+  const explanationDone = typedExplanation === explanation;
+  const typedRationale = useTypewriter(rationale, explanationDone);
+
+  return (
+    <>
+      <p className="text-sm text-app-ink">{typedExplanation}</p>
+      {explanationDone && <p className={typeScale.caption}>Rationale: {typedRationale}</p>}
+    </>
+  );
 }
 
 type Mode = "replay" | "custom";
@@ -72,6 +93,37 @@ export default function LiveScoring() {
   const [customAttachEntityId, setCustomAttachEntityId] = useState<string>("");
   const [playing, setPlaying] = useState(false);
   const [playSpeed, setPlaySpeed] = useState<PlaySpeed>(1);
+  const [thresholds, setThresholds] = useState<{ review: number; block: number } | null>(null);
+  const [escalationBeat, setEscalationBeat] = useState<"review" | "block" | null>(null);
+
+  // The gauge eases from the previous score to the new one, so a second
+  // score reads as a move rather than a jump-cut.
+  const animatedScore = useAnimatedNumber(result?.risk_score ?? 0, 450);
+
+  // Fetched once for the whole session — the decision boundary doesn't
+  // change between scores, so this must not be a per-score request.
+  useEffect(() => {
+    api
+      .costAnalysis(5000, 150)
+      .then((data) => setThresholds(data.decision_thresholds))
+      .catch(() => {
+        // The gauge falls back to a plain score readout; scoring itself
+        // is unaffected.
+      });
+  }, []);
+
+  // One brief beat per escalated result, highlighting the tick the
+  // entity's history pushed this transaction past. Fires once and
+  // settles — never loops.
+  useEffect(() => {
+    if (!result?.decision.escalated_due_to_history) {
+      setEscalationBeat(null);
+      return;
+    }
+    setEscalationBeat(result.decision.action === "BLOCK" ? "block" : "review");
+    const timer = setTimeout(() => setEscalationBeat(null), 600);
+    return () => clearTimeout(timer);
+  }, [result?.verdict_id]);
 
   useEffect(() => {
     api
@@ -299,7 +351,7 @@ export default function LiveScoring() {
               <button
                 onClick={() => setPlaying((p) => !p)}
                 disabled={!txns.length}
-                className={`text-sm font-medium px-3 py-1.5 rounded-md border border-app-accent text-app-accent-soft bg-transparent hover:bg-app-accent/10 disabled:opacity-50 ${buttonLabel} ${buttonBase}`}
+                className={`text-sm font-medium px-3 py-1.5 rounded-md border border-app-accent text-app-accent-soft bg-transparent hover:bg-app-accent/10 disabled:opacity-50 ${pressable} ${buttonLabel} ${buttonBase}`}
               >
                 {playing ? "Pause" : "Play"}
               </button>
@@ -321,7 +373,7 @@ export default function LiveScoring() {
 
             <button
               onClick={handleReset}
-              className={`w-full text-sm px-3 py-1.5 rounded-md border border-transparent text-app-muted hover:bg-app-ink/5 ${buttonLabel} ${buttonBase}`}
+              className={`w-full text-sm px-3 py-1.5 rounded-md border border-transparent text-app-muted hover:bg-app-ink/5 ${pressable} ${buttonLabel} ${buttonBase}`}
             >
               Reset entity memory
             </button>
@@ -329,7 +381,7 @@ export default function LiveScoring() {
             <button
               onClick={handleScore}
               disabled={!txns.length || scoring || playing}
-              className={`w-full text-sm font-medium px-3 py-2 rounded-md border border-app-accent text-app-accent-soft bg-transparent hover:bg-app-accent/10 ${buttonLabel} ${buttonBase}`}
+              className={`w-full text-sm font-medium px-3 py-2 rounded-md border border-app-accent text-app-accent-soft bg-transparent hover:bg-app-accent/10 ${pressable} ${buttonLabel} ${buttonBase}`}
             >
               {scoring ? "Scoring..." : "Score this transaction"}
             </button>
@@ -492,7 +544,7 @@ export default function LiveScoring() {
             <button
               onClick={handleScoreCustom}
               disabled={scoring}
-              className={`w-full text-sm font-medium px-3 py-2 rounded-md border border-app-accent text-app-accent-soft bg-transparent hover:bg-app-accent/10 ${buttonLabel} ${buttonBase}`}
+              className={`w-full text-sm font-medium px-3 py-2 rounded-md border border-app-accent text-app-accent-soft bg-transparent hover:bg-app-accent/10 ${pressable} ${buttonLabel} ${buttonBase}`}
             >
               {scoring ? "Scoring..." : "Score this transaction"}
             </button>
@@ -527,15 +579,23 @@ export default function LiveScoring() {
                   visual weight, so it gets a filled card instead of the
                   plain-outline treatment everything else uses. */}
               <div className={`${surface} p-5`}>
-                <p className={typeScale.caption}>Risk Score</p>
-                <p className="text-4xl font-bold text-app-ink mt-1 tabular-nums">
-                  {result.risk_score}
-                  <span className="text-lg font-normal text-app-faint"> / 100</span>
-                </p>
-                <div className={`mt-3 ${statusBadgeClass(riskBand(result.risk_score).status)}`}>
-                  <span className={statusDotClass(riskBand(result.risk_score).status)} />
-                  {riskBand(result.risk_score).label}
-                </div>
+                {thresholds ? (
+                  <RiskGauge
+                    score={animatedScore}
+                    reviewThreshold={thresholds.review}
+                    blockThreshold={thresholds.block}
+                    highlightThreshold={escalationBeat}
+                    label="Risk Score"
+                  />
+                ) : (
+                  <>
+                    <p className={typeScale.caption}>Risk Score</p>
+                    <p className="font-mono text-4xl font-bold text-app-ink mt-1 tabular-nums">
+                      {result.risk_score}
+                      <span className="text-lg font-normal text-app-faint"> / 100</span>
+                    </p>
+                  </>
+                )}
               </div>
 
               <div>
@@ -575,14 +635,22 @@ export default function LiveScoring() {
 
             <div className={`${surface} p-5 space-y-3`}>
               <h3 className={typeScale.subTitle}>Automated Decision</h3>
-              <div className={statusBadgeClass(actionStatus[result.decision.action])}>
+              <div
+                className={`${statusBadgeClass(actionStatus[result.decision.action])} ${
+                  escalationBeat ? "ring-2 ring-app-accent" : ""
+                }`}
+                style={{ transition: `box-shadow 300ms ${easing.standard}` }}
+              >
                 <span className={statusDotClass(actionStatus[result.decision.action])} />
                 <span className="font-semibold">{result.decision.action}</span>
               </div>
               {result.decision.escalated_due_to_history && (
                 <div className={`border ${accentBorder} ${accentBg} ${accentText} rounded-md px-3 py-2 text-sm flex items-start gap-2`}>
                   <AlertTriangleIcon className="h-4 w-4 mt-0.5 shrink-0" />
-                  <span>Action escalated due to this entity's recent risk trajectory.</span>
+                  <span>
+                    Escalated due to this entity's recent history — the raw score alone would not
+                    have reached {result.decision.action}.
+                  </span>
                 </div>
               )}
               <p className={typeScale.caption}>
@@ -596,8 +664,12 @@ export default function LiveScoring() {
                   <p className="text-sm text-app-faint italic mt-1.5">Generating explanation…</p>
                 ) : (
                   <div className="space-y-2 mt-1.5">
+                    <ExplanationReveal
+                      explanation={explanation.verdict.explanation}
+                      rationale={explanation.verdict.rationale}
+                    />
                     {explanation.verdict.action !== result.decision.action && (
-                      <div className="border border-amber-500/30 bg-amber-500/10 text-amber-300 rounded-md px-3 py-2 text-xs flex items-start gap-2">
+                      <div className={`${noticeClass("warning")} text-xs flex items-start gap-2`}>
                         <AlertTriangleIcon className="h-3.5 w-3.5 mt-0.5 shrink-0" />
                         <span>
                           Note: the AI reviewer's suggested action ({explanation.verdict.action}) differs
@@ -606,8 +678,6 @@ export default function LiveScoring() {
                         </span>
                       </div>
                     )}
-                    <p className="text-sm text-app-ink">{explanation.verdict.explanation}</p>
-                    <p className={typeScale.caption}>Rationale: {explanation.verdict.rationale}</p>
                   </div>
                 )}
               </div>

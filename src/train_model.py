@@ -24,11 +24,16 @@ Outputs:
                                          for exactly how "block" is derived.
     models/eval_report.txt            - AUC/PR-AUC + cost-based analysis
     models/cost_summary.json          - {"estimated_savings", "estimated_savings_pct",
-                                         "n_test_transactions"} from the cost-optimal
-                                         threshold analysis above, in structured form —
-                                         feeds GET /api/cost-analysis's headline_monthly_
-                                         savings_estimate (see src/impact_summary.py),
-                                         since eval_report.txt itself is unstructured text.
+                                         "n_test_transactions", "roc_auc"} from the
+                                         cost-optimal threshold analysis above, in
+                                         structured form — feeds GET /api/cost-analysis's
+                                         headline_monthly_savings_estimate (see
+                                         src/impact_summary.py) and its "At a glance"
+                                         panel, since eval_report.txt is unstructured text.
+    models/cost_curve.json            - per-threshold false_negatives/false_positives over
+                                         the test set, so GET /api/cost-analysis can serve
+                                         the cost curve (and recompute it for any cost
+                                         assumption) without re-scoring 100k+ rows.
 """
 import json
 
@@ -38,7 +43,7 @@ from xgboost import XGBClassifier
 from sklearn.metrics import roc_auc_score, average_precision_score, classification_report
 
 from data_utils import load_raw_data, engineer_features, time_based_split, CATEGORICAL_COLS
-from cost_analysis import optimal_threshold, DEFAULT_AVG_FRAUD_LOSS, DEFAULT_AVG_FP_COST
+from cost_analysis import cost_curve, optimal_threshold, DEFAULT_AVG_FRAUD_LOSS, DEFAULT_AVG_FP_COST
 
 MODEL_PATH = "models/risk_model.joblib"
 FEATURES_PATH = "models/feature_cols.joblib"
@@ -47,6 +52,7 @@ CATEGORIES_PATH = "models/categorical_categories.joblib"
 REPORT_PATH = "models/eval_report.txt"
 DECISION_THRESHOLDS_PATH = "models/decision_thresholds.joblib"
 COST_SUMMARY_PATH = "models/cost_summary.json"
+COST_CURVE_PATH = "models/cost_curve.json"
 
 # The REVIEW threshold is just optimal_threshold()'s result under the
 # default cost assumptions — the point where flagging first becomes
@@ -121,6 +127,13 @@ def train(df=None):
 
     # --- Cost-optimal threshold analysis ---
     cost_result = optimal_threshold(y_test, y_proba)
+    # The same curve optimal_threshold() minimizes over, persisted so the
+    # API can serve it without re-scoring the test set per request. Only
+    # the threshold and the two error counts are kept: total cost for any
+    # other cost assumption is exactly fn * fraud_loss + fp * fp_cost, so
+    # the frontend's chart can follow the user's inputs without needing
+    # the model.
+    curve_df = cost_curve(y_test, y_proba)
     optimal_t = cost_result["optimal_threshold"]
     optimal_report = classification_report(y_test, (y_proba >= optimal_t).astype(int), digits=4)
 
@@ -177,7 +190,13 @@ def train(df=None):
             "estimated_savings": cost_result["estimated_savings"],
             "estimated_savings_pct": cost_result["estimated_savings_pct"],
             "n_test_transactions": len(y_test),
+            "roc_auc": round(float(auc), 4),
         }, f, indent=2)
+    with open(COST_CURVE_PATH, "w", encoding="utf-8") as f:
+        json.dump(
+            curve_df[["threshold", "false_negatives", "false_positives"]].to_dict("records"),
+            f,
+        )
     print(f"\nSaved model -> {MODEL_PATH}")
     print(f"Saved feature list -> {FEATURES_PATH}")
     print(f"Saved cost-optimal threshold -> {THRESHOLD_PATH}")
@@ -185,6 +204,7 @@ def train(df=None):
     print(f"Saved live decision thresholds -> {DECISION_THRESHOLDS_PATH}")
     print(f"Saved eval report -> {REPORT_PATH}")
     print(f"Saved cost summary -> {COST_SUMMARY_PATH}")
+    print(f"Saved cost curve -> {COST_CURVE_PATH}")
 
 
 if __name__ == "__main__":

@@ -32,6 +32,8 @@ const SAMPLE_ITEM = {
 
 const EMPTY_METRICS = {
   total_disposed: 0,
+  confirmed_fraud_count: 0,
+  false_positive_count: 0,
   overall_precision: null,
   escalated_count: 0,
   escalated_precision: null,
@@ -115,6 +117,8 @@ describe("ReviewQueue", () => {
     mockedApi.listReviewQueue.mockResolvedValue({ items: [] });
     mockedApi.reviewQueueMetrics.mockResolvedValue({
       total_disposed: 4,
+      confirmed_fraud_count: 3,
+      false_positive_count: 1,
       overall_precision: 0.75,
       escalated_count: 2,
       escalated_precision: 0.5,
@@ -208,5 +212,68 @@ describe("ReviewQueue", () => {
       await screen.findByText("entity-a");
       expect(screen.queryByText(/other item.*for this entity/i)).not.toBeInTheDocument();
     });
+  });
+});
+
+describe("ReviewQueue stats strip", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    mockedApi.relatedReviewItems.mockResolvedValue({ items: [] });
+  });
+
+  it("reflects the counts in the fetched queue and metrics", async () => {
+    mockedApi.listReviewQueue.mockResolvedValue({
+      items: [SAMPLE_ITEM, { ...SAMPLE_ITEM, verdict_id: "v-2" }],
+    });
+    mockedApi.reviewQueueMetrics.mockResolvedValue({
+      ...EMPTY_METRICS,
+      total_disposed: 3,
+      confirmed_fraud_count: 2,
+      false_positive_count: 1,
+      overall_precision: 0.6667,
+    });
+
+    render(<ReviewQueue />);
+
+    // 2 pending + 3 disposed = 5 in queue
+    expect(await screen.findByText("5")).toBeInTheDocument();
+    expect(screen.getByText("In queue")).toBeInTheDocument();
+    expect(screen.getByText("Pending")).toBeInTheDocument();
+    expect(screen.getByText("Confirmed fraud")).toBeInTheDocument();
+    expect(screen.getByText("False positive")).toBeInTheDocument();
+  });
+
+  it("updates the counts when an item is disposed, without a second fetch path", async () => {
+    mockedApi.listReviewQueue.mockResolvedValue({ items: [SAMPLE_ITEM] });
+    mockedApi.reviewQueueMetrics.mockResolvedValue(EMPTY_METRICS);
+
+    render(<ReviewQueue />);
+    await screen.findByText("entity-a");
+
+    // Before: 1 pending, nothing disposed.
+    expect(screen.getByText("In queue").nextSibling).toHaveTextContent("1");
+    expect(screen.getByText("Confirmed fraud").nextSibling).toHaveTextContent("0");
+
+    // The refresh after disposing returns the post-disposition state.
+    mockedApi.disposeReviewItem.mockResolvedValue({
+      ...SAMPLE_ITEM,
+      disposition: "CONFIRMED_FRAUD" as const,
+    });
+    mockedApi.listReviewQueue.mockResolvedValue({ items: [] });
+    mockedApi.reviewQueueMetrics.mockResolvedValue({
+      ...EMPTY_METRICS,
+      total_disposed: 1,
+      confirmed_fraud_count: 1,
+      overall_precision: 1,
+    });
+
+    fireEvent.click(screen.getByRole("button", { name: /Confirm Fraud/i }));
+
+    await waitFor(() => {
+      expect(screen.getByText("Confirmed fraud").nextSibling).toHaveTextContent("1");
+    });
+    expect(screen.getByText("Pending").nextSibling).toHaveTextContent("0");
+    // Still 1 item total — it moved from pending to disposed, not vanished.
+    expect(screen.getByText("In queue").nextSibling).toHaveTextContent("1");
   });
 });

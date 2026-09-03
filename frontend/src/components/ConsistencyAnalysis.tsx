@@ -1,6 +1,7 @@
 import { useEffect, useState } from "react";
 import { api, type ConsistencyAnalysis as ConsistencyAnalysisData } from "../api/client";
-import { typeScale } from "../theme";
+import { BarChart } from "./charts";
+import { noticeClass, typeScale } from "../theme";
 
 function formatPct(p: number | null): string {
   return p === null ? "—" : `${(p * 100).toFixed(0)}%`;
@@ -40,7 +41,7 @@ export default function ConsistencyAnalysis() {
       {error && <p className="text-sm text-app-danger">{error}</p>}
 
       {message && (
-        <p className="text-sm text-amber-300 bg-amber-500/10 border border-amber-500/30 rounded-md px-3 py-2">
+        <p className={`${noticeClass("warning")} text-sm`}>
           {message}
         </p>
       )}
@@ -65,6 +66,37 @@ export default function ConsistencyAnalysis() {
             <h3 className={typeScale.subTitle}>
               Part B — LLM self-consistency and cross-agreement (real Gemini API calls)
             </h3>
+
+            {/* Chart the shape, keep the table for the exact per-pair
+                numbers below — a reader comparing bands wants both. */}
+            {data.part_b_pairs.some((p) => p.self_consistency_rate !== null) && (
+              <div className="border border-app-rule rounded-xl p-4 mt-2">
+                <p className={typeScale.caption}>
+                  Self-consistency rate by band — how often repeated calls on the same case
+                  produced the same action.
+                </p>
+                <div className="mt-3">
+                  <BarChart
+                    ariaLabel="LLM self-consistency rate by score band"
+                    max={1}
+                    formatValue={(v) => `${(v * 100).toFixed(0)}%`}
+                    bars={data.part_b_pairs
+                      .filter((p) => p.self_consistency_rate !== null)
+                      .map((p) => ({
+                        label: `${p.band} · ${p.escalation_context}`,
+                        value: p.self_consistency_rate as number,
+                        status:
+                          (p.self_consistency_rate as number) >= 0.9
+                            ? ("success" as const)
+                            : (p.self_consistency_rate as number) >= 0.7
+                              ? ("warning" as const)
+                              : ("danger" as const),
+                      }))}
+                  />
+                </div>
+              </div>
+            )}
+
             <div className="overflow-x-auto mt-2">
               <table className="text-xs text-app-muted w-full">
                 <thead>

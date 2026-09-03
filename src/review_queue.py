@@ -69,6 +69,11 @@ def _compute_metrics(items: list[dict]) -> dict:
 
     return {
         "total_disposed": len(disposed),
+        # Raw dispositions, not just the precision ratio — the queue's
+        # stats strip needs the counts themselves, and the pending-only
+        # list endpoint can't supply them.
+        "confirmed_fraud_count": sum(1 for i in disposed if i["disposition"] == CONFIRMED_FRAUD),
+        "false_positive_count": sum(1 for i in disposed if i["disposition"] == FALSE_POSITIVE),
         "overall_precision": precision(disposed),
         "escalated_count": len(escalated),
         "escalated_precision": precision(escalated),

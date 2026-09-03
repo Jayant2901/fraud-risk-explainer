@@ -1,0 +1,89 @@
+{
+  "n_transactions": 118108,
+  "baseline": {
+    "n_fraud": 4064,
+    "n_legit": 114044,
+    "flagged_fraud": 3590,
+    "flagged_legit": 13312,
+    "recall": 0.8833661417322834,
+    "false_flag_rate": 0.11672687734558591
+  },
+  "adjusted": {
+    "n_fraud": 4064,
+    "n_legit": 114044,
+    "flagged_fraud": 3632,
+    "flagged_legit": 16776,
+    "recall": 0.8937007874015748,
+    "false_flag_rate": 0.14710111886640245
+  },
+  "flips": {
+    "n_flips": 5933,
+    "n_flips_fraud": 193,
+    "precision": 0.03252991741109051
+  },
+  "sweep": [
+    {
+      "watch_threshold": 0.8,
+      "elevated_threshold": 2.0,
+      "recall": 0.9030511811023622,
+      "false_flag_rate": 0.1794307460278489,
+      "cost": 5039450.0
+    },
+    {
+      "watch_threshold": 0.8,
+      "elevated_threshold": 2.8,
+      "recall": 0.8971456692913385,
+      "false_flag_rate": 0.1594209252569184,
+      "cost": 4817150.0
+    },
+    {
+      "watch_threshold": 0.8,
+      "elevated_threshold": 3.6,
+      "recall": 0.8937007874015748,
+      "false_flag_rate": 0.14710111886640245,
+      "cost": 4676400.0
+    },
+    {
+      "watch_threshold": 1.2,
+      "elevated_threshold": 2.0,
+      "recall": 0.9030511811023622,
+      "false_flag_rate": 0.1794307460278489,
+      "cost": 5039450.0
+    },
+    {
+      "watch_threshold": 1.2,
+      "elevated_threshold": 2.8,
+      "recall": 0.8971456692913385,
+      "false_flag_rate": 0.1594209252569184,
+      "cost": 4817150.0
+    },
+    {
+      "watch_threshold": 1.2,
+      "elevated_threshold": 3.6,
+      "recall": 0.8937007874015748,
+      "false_flag_rate": 0.14710111886640245,
+      "cost": 4676400.0
+    },
+    {
+      "watch_threshold": 1.6,
+      "elevated_threshold": 2.0,
+      "recall": 0.9030511811023622,
+      "false_flag_rate": 0.1794307460278489,
+      "cost": 5039450.0
+    },
+    {
+      "watch_threshold": 1.6,
+      "elevated_threshold": 2.8,
+      "recall": 0.8971456692913385,
+      "false_flag_rate": 0.1594209252569184,
+      "cost": 4817150.0
+    },
+    {
+      "watch_threshold": 1.6,
+      "elevated_threshold": 3.6,
+      "recall": 0.8937007874015748,
+      "false_flag_rate": 0.14710111886640245,
+      "cost": 4676400.0
+    }
+  ]
+}

@@ -633,6 +633,134 @@ class TestCostAnalysis:
         assert body["headline_monthly_savings_estimate"] == 500_000.0
         assert "illustrative" in body["headline_basis"].lower()
 
+    def test_cost_curve_is_empty_when_none_has_been_generated(self, client, auth_headers, monkeypatch, tmp_path):
+        import api.main as main
+
+        monkeypatch.setattr(main, "COST_CURVE_PATH", str(tmp_path / "does-not-exist.json"))
+
+        r = client.get("/api/cost-analysis", headers=auth_headers)
+
+        assert r.json()["cost_curve"] == []
+
+    def test_cost_curve_total_cost_follows_the_requested_assumptions(
+        self, client, auth_headers, monkeypatch, tmp_path
+    ):
+        import api.main as main
+        import json
+
+        curve_path = tmp_path / "cost_curve.json"
+        curve_path.write_text(json.dumps([
+            {"threshold": 0.1, "false_negatives": 2, "false_positives": 10},
+            {"threshold": 0.9, "false_negatives": 20, "false_positives": 1},
+        ]))
+        monkeypatch.setattr(main, "COST_CURVE_PATH", str(curve_path))
+
+        r = client.get("/api/cost-analysis?fraud_loss=1000&fp_cost=50", headers=auth_headers)
+
+        # Same arithmetic as cost_analysis.cost_curve: fn*loss + fp*fp_cost.
+        assert r.json()["cost_curve"] == [
+            {"threshold": 0.1, "total_cost": 2 * 1000 + 10 * 50},
+            {"threshold": 0.9, "total_cost": 20 * 1000 + 1 * 50},
+        ]
+
+    def test_exposes_the_live_decision_thresholds(self, client, auth_headers):
+        import api.main as main
+
+        r = client.get("/api/cost-analysis", headers=auth_headers)
+
+        # The same object the scoring path decides with, not a copy.
+        assert r.json()["decision_thresholds"] == main.get_decision_thresholds()
+
+    def test_exposes_the_real_escalation_cutoffs(self, client, auth_headers):
+        import entity_memory
+
+        r = client.get("/api/cost-analysis", headers=auth_headers)
+
+        assert r.json()["escalation_cutoffs"] == {
+            "watch": entity_memory.DEFAULT_WATCH_PRESSURE_THRESHOLD,
+            "elevated": entity_memory.DEFAULT_ELEVATED_PRESSURE_THRESHOLD,
+        }
+
+    def test_roc_auc_comes_from_the_cost_summary_file(self, client, auth_headers, monkeypatch, tmp_path):
+        import api.main as main
+        import json
+
+        summary_path = tmp_path / "cost_summary.json"
+        summary_path.write_text(json.dumps({
+            "estimated_savings": 1000.0,
+            "estimated_savings_pct": 8.8,
+            "n_test_transactions": 1000,
+            "roc_auc": 0.9123,
+        }))
+        monkeypatch.setattr(main, "COST_SUMMARY_PATH", str(summary_path))
+
+        r = client.get("/api/cost-analysis", headers=auth_headers)
+
+        assert r.json()["roc_auc"] == 0.9123
+
+    def test_roc_auc_is_null_for_a_summary_written_before_it_was_recorded(
+        self, client, auth_headers, monkeypatch, tmp_path
+    ):
+        import api.main as main
+        import json
+
+        summary_path = tmp_path / "cost_summary.json"
+        summary_path.write_text(json.dumps({
+            "estimated_savings": 1000.0,
+            "estimated_savings_pct": 8.8,
+            "n_test_transactions": 1000,
+        }))
+        monkeypatch.setattr(main, "COST_SUMMARY_PATH", str(summary_path))
+
+        r = client.get("/api/cost-analysis", headers=auth_headers)
+
+        assert r.json()["roc_auc"] is None
+
+
+class TestEscalationAblation:
+    def test_returns_a_helpful_message_when_no_report_exists_yet(self, client, auth_headers, monkeypatch, tmp_path):
+        import api.main as main
+
+        monkeypatch.setattr(main, "ESCALATION_ABLATION_REPORT_PATH", str(tmp_path / "nope.txt"))
+
+        body = client.get("/api/escalation-ablation", headers=auth_headers).json()
+        assert body["report"] is None
+        assert body["summary"] is None
+        assert "escalation_ablation.py" in body["message"]
+
+    def test_serves_the_structured_summary_alongside_the_text_report(
+        self, client, auth_headers, monkeypatch, tmp_path
+    ):
+        import api.main as main
+        import json
+
+        report_path = tmp_path / "report.txt"
+        report_path.write_text("Escalation ablation study", encoding="utf-8")
+        summary_path = tmp_path / "summary.json"
+        summary_path.write_text(json.dumps({"n_transactions": 10, "baseline": {"recall": 0.5}}))
+        monkeypatch.setattr(main, "ESCALATION_ABLATION_REPORT_PATH", str(report_path))
+        monkeypatch.setattr(main, "ESCALATION_ABLATION_SUMMARY_PATH", str(summary_path))
+
+        body = client.get("/api/escalation-ablation", headers=auth_headers).json()
+
+        assert body["report"] == "Escalation ablation study"
+        assert body["summary"]["n_transactions"] == 10
+
+    def test_summary_is_null_for_a_report_generated_before_it_existed(
+        self, client, auth_headers, monkeypatch, tmp_path
+    ):
+        import api.main as main
+
+        report_path = tmp_path / "report.txt"
+        report_path.write_text("Escalation ablation study", encoding="utf-8")
+        monkeypatch.setattr(main, "ESCALATION_ABLATION_REPORT_PATH", str(report_path))
+        monkeypatch.setattr(main, "ESCALATION_ABLATION_SUMMARY_PATH", str(tmp_path / "nope.json"))
+
+        body = client.get("/api/escalation-ablation", headers=auth_headers).json()
+
+        assert body["report"] == "Escalation ablation study"
+        assert body["summary"] is None
+
 
 class TestColdStartAnalysis:
     """Same file-read-or-fallback-message pattern as the other offline

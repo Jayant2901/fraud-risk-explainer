@@ -1,5 +1,6 @@
 {
   "estimated_savings": 421850.0,
   "estimated_savings_pct": 8.8,
-  "n_test_transactions": 118108
+  "n_test_transactions": 118108,
+  "roc_auc": 0.954
 }

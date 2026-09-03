@@ -32,9 +32,11 @@ Run:
 
 Output:
     models/escalation_ablation_report.txt
+    models/escalation_ablation_summary.json  (same numbers, structured, for the API)
 """
 import sys
 import os
+import json
 from collections import defaultdict, deque
 
 sys.path.append(os.path.dirname(__file__))
@@ -56,6 +58,10 @@ from cost_analysis import DEFAULT_AVG_FRAUD_LOSS, DEFAULT_AVG_FP_COST
 MODEL_PATH = "models/risk_model.joblib"
 FEATURES_PATH = "models/feature_cols.joblib"
 REPORT_PATH = "models/escalation_ablation_report.txt"
+# The same numbers build_report() renders as text, in structured form,
+# so GET /api/escalation-ablation can serve a chartable comparison
+# instead of the frontend regex-parsing a human-readable report.
+SUMMARY_PATH = "models/escalation_ablation_summary.json"
 
 TEST_FRAC = 0.2
 FLAGGED_ACTIONS = {"REVIEW", "BLOCK"}
@@ -335,6 +341,21 @@ def build_report(replay_df: pd.DataFrame) -> str:
     return "\n".join(lines)
 
 
+def build_summary(replay_df: pd.DataFrame, sweep_results: list[dict]) -> dict:
+    """Structured twin of build_report() — identical numbers, from the
+    identical computation, shaped for a chart rather than a page of text."""
+    baseline = compute_strategy_metrics(replay_df["is_fraud"], replay_df["baseline_action"])
+    adjusted = compute_strategy_metrics(replay_df["is_fraud"], replay_df["adjusted_action"])
+    flips = compute_escalation_flip_precision(replay_df)
+    return {
+        "n_transactions": len(replay_df),
+        "baseline": baseline,
+        "adjusted": adjusted,
+        "flips": flips,
+        "sweep": sweep_results,
+    }
+
+
 def run():
     print("Loading and feature-engineering the full dataset...")
     test_df = load_test_set()
@@ -360,6 +381,10 @@ def run():
     with open(REPORT_PATH, "w", encoding="utf-8") as f:
         f.write(report)
     print(f"Saved -> {REPORT_PATH}")
+
+    with open(SUMMARY_PATH, "w", encoding="utf-8") as f:
+        json.dump(build_summary(replay_df, sweep_results), f, indent=2)
+    print(f"Saved -> {SUMMARY_PATH}")
 
 
 if __name__ == "__main__":

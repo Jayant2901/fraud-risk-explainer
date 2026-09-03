@@ -1,6 +1,6 @@
 import { useEffect, useState } from "react";
 import { api } from "../api/client";
-import { typeScale } from "../theme";
+import { noticeClass, typeScale } from "../theme";
 
 export default function ColdStartAnalysis() {
   const [report, setReport] = useState<string | null>(null);
@@ -31,7 +31,7 @@ export default function ColdStartAnalysis() {
       {error && <p className="text-sm text-app-danger">{error}</p>}
 
       {message && (
-        <p className="text-sm text-amber-300 bg-amber-500/10 border border-amber-500/30 rounded-md px-3 py-2">
+        <p className={`${noticeClass("warning")} text-sm`}>
           {message}
         </p>
       )}

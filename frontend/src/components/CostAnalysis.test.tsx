@@ -21,6 +21,10 @@ function mockCostAnalysisResponse() {
     params: { fraud_loss: 5000, fp_cost: 150 },
     headline_monthly_savings_estimate: null,
     headline_basis: null,
+    cost_curve: [],
+    decision_thresholds: { review: 34, block: 71 },
+    escalation_cutoffs: { watch: 0.8, elevated: 3.6 },
+    roc_auc: 0.9541,
   });
   mockedApi.costSensitivity.mockResolvedValue({
     sensitivity: null,
@@ -79,6 +83,10 @@ describe("CostAnalysis", () => {
       params: { fraud_loss: 5000, fp_cost: 150 },
       headline_monthly_savings_estimate: null,
       headline_basis: null,
+      cost_curve: [],
+    decision_thresholds: { review: 34, block: 71 },
+      escalation_cutoffs: { watch: 0.8, elevated: 3.6 },
+      roc_auc: 0.9541,
     });
     mockedApi.costSensitivity.mockResolvedValue({ sensitivity: null, message: null });
     mockedApi.driftAnalysis.mockResolvedValue({ drift: null, message: null });
@@ -172,5 +180,65 @@ describe("CostAnalysis", () => {
     render(<CostAnalysis />);
 
     expect(await screen.findByText(/drift_analysis\.py/)).toBeInTheDocument();
+  });
+  describe("cost curve chart", () => {
+    function mockWithCurve() {
+      mockedApi.costAnalysis.mockResolvedValue({
+        eval_report: null,
+        defaults: { avg_fraud_loss: 5000, avg_fp_cost: 150 },
+        params: { fraud_loss: 5000, fp_cost: 150 },
+        headline_monthly_savings_estimate: null,
+        headline_basis: null,
+        cost_curve: [
+          { threshold: 0.1, total_cost: 6000000 },
+          { threshold: 0.34, total_cost: 4367300 },
+          { threshold: 0.71, total_cost: 4800000 },
+          { threshold: 0.9, total_cost: 7000000 },
+        ],
+        decision_thresholds: { review: 34, block: 71 },
+        escalation_cutoffs: { watch: 0.8, elevated: 3.6 },
+        roc_auc: 0.954,
+      });
+      mockedApi.costSensitivity.mockResolvedValue({ sensitivity: null, message: null });
+      mockedApi.driftAnalysis.mockResolvedValue({ drift: null, message: null });
+    }
+
+    it("plots a point per curve entry from the real data", async () => {
+      mockWithCurve();
+
+      render(<CostAnalysis />);
+
+      const chart = await screen.findByRole("img", { name: /Total expected cost across decision thresholds/i });
+      expect(chart.querySelector("polyline")?.getAttribute("points")?.trim().split(/\s+/)).toHaveLength(4);
+    });
+
+    it("marks the cheapest threshold's cost", async () => {
+      mockWithCurve();
+
+      render(<CostAnalysis />);
+
+      // The minimum of the mocked curve, formatted in Indian digit grouping.
+      expect(await screen.findByText("₹43,67,300")).toBeInTheDocument();
+    });
+
+    it("draws reference lines at the live REVIEW and BLOCK boundaries", async () => {
+      mockWithCurve();
+
+      render(<CostAnalysis />);
+
+      expect(await screen.findByText("REVIEW")).toBeInTheDocument();
+      expect(screen.getByText("BLOCK")).toBeInTheDocument();
+    });
+
+    it("renders no curve section before train_model.py has written one", async () => {
+      mockCostAnalysisResponse(); // cost_curve: []
+
+      render(<CostAnalysis />);
+
+      await screen.findByText(/train_model\.py/);
+      expect(
+        screen.queryByRole("img", { name: /Total expected cost across decision thresholds/i })
+      ).not.toBeInTheDocument();
+    });
   });
 });

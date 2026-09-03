@@ -52,6 +52,15 @@ export interface CostAnalysis {
   params: { fraud_loss: number; fp_cost: number };
   headline_monthly_savings_estimate: number | null;
   headline_basis: string | null;
+  // Per-threshold total cost over the real test set, recomputed by the
+  // API for the fraud_loss/fp_cost this request asked for. Empty until
+  // train_model.py has written models/cost_curve.json.
+  cost_curve: { threshold: number; total_cost: number }[];
+  decision_thresholds: { review: number; block: number };
+  escalation_cutoffs: { watch: number; elevated: number };
+  // null until train_model.py has been re-run to write it into
+  // models/cost_summary.json.
+  roc_auc: number | null;
 }
 
 export interface CostSensitivityCell {
@@ -174,8 +183,44 @@ export interface TextReportResult {
   message: string | null;
 }
 
+export interface StrategyMetrics {
+  n_fraud: number;
+  n_legit: number;
+  flagged_fraud: number;
+  flagged_legit: number;
+  recall: number;
+  false_flag_rate: number;
+}
+
+export interface EscalationSweepRow {
+  watch_threshold: number;
+  elevated_threshold: number;
+  recall: number;
+  false_flag_rate: number;
+  cost: number;
+}
+
+// The structured twin of the escalation ablation text report — same
+// numbers, same computation, shaped for charting. Null until
+// src/escalation_ablation.py has been re-run to write it.
+export interface EscalationAblationSummary {
+  n_transactions: number;
+  baseline: StrategyMetrics;
+  adjusted: StrategyMetrics;
+  flips: { n_flips: number; n_flips_fraud: number; precision: number };
+  sweep: EscalationSweepRow[];
+}
+
+export interface EscalationAblationResult {
+  report: string | null;
+  summary: EscalationAblationSummary | null;
+  message: string | null;
+}
+
 export interface ReviewQueueMetrics {
   total_disposed: number;
+  confirmed_fraud_count: number;
+  false_positive_count: number;
   overall_precision: number | null;
   escalated_count: number;
   escalated_precision: number | null;
@@ -258,6 +303,6 @@ export const api = {
     request<{ items: ReviewQueueItem[] }>(`/review-queue/${encodeURIComponent(verdictId)}/related`),
   driftAnalysis: () => request<DriftAnalysisResult>("/drift-analysis"),
   consistencyAnalysis: () => request<ConsistencyAnalysisResult>("/consistency-analysis"),
-  escalationAblation: () => request<TextReportResult>("/escalation-ablation"),
+  escalationAblation: () => request<EscalationAblationResult>("/escalation-ablation"),
   coldStartAnalysis: () => request<TextReportResult>("/cold-start-analysis"),
 };

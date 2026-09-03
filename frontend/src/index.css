@@ -1,4 +1,4 @@
-@import url('https://fonts.googleapis.com/css2?family=Orbitron:wght@500;700&family=JetBrains+Mono:wght@400;500;600&display=swap');
+@import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500;600&display=swap');
 @import "tailwindcss";
 
 /* Dark minimal theme tokens — see design-handoff/README.md. Registered
@@ -14,9 +14,57 @@
   --color-app-accent: #8fa3ad;
   --color-app-accent-soft: #b7c5cc;
   --color-app-danger: #c98a7a;
-  --font-heading: "Orbitron", sans-serif;
+
+  /* Apple's dark-mode system accent palette, used verbatim. These back
+     the success/warning/danger status scale in theme.ts. */
+  --color-sys-green: #32D74B;
+  --color-sys-orange: #FF9F0A;
+  --color-sys-red: #FF453A;
+  --color-sys-blue: #0A84FF;
+
+  /* San Francisco isn't web-distributable, so Inter is the loaded
+     fallback for every browser that isn't macOS/iOS/Safari. */
+  --font-system: -apple-system, BlinkMacSystemFont, 'SF Pro Display', 'Inter', sans-serif;
 }
 
 body {
-  font-family: "JetBrains Mono", ui-monospace, monospace;
+  font-family: var(--font-system);
+}
+
+/* Staggered entrance used by Overview's sections. Wrapped in
+   no-preference so a reduced-motion visitor gets the final state with no
+   animation at all — the JS-side equivalent is usePrefersReducedMotion()
+   in hooks.ts. */
+@media (prefers-reduced-motion: no-preference) {
+  @keyframes cardIn {
+    from {
+      opacity: 0;
+      transform: translateY(12px);
+    }
+    to {
+      opacity: 1;
+      transform: none;
+    }
+  }
+
+  .animate-card-in {
+    opacity: 0;
+    animation: cardIn 420ms cubic-bezier(.34, 1.56, .64, 1) forwards;
+  }
+
+  /* Panel crossfade on tab change (App.tsx keys this on the active tab). */
+  @keyframes panelIn {
+    from {
+      opacity: 0;
+      transform: translateY(4px);
+    }
+    to {
+      opacity: 1;
+      transform: none;
+    }
+  }
+
+  .animate-panel-in {
+    animation: panelIn 180ms cubic-bezier(.32, .72, 0, 1);
+  }
 }

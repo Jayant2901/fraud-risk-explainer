@@ -24,10 +24,14 @@ function mockAllReports() {
     params: { fraud_loss: 5000, fp_cost: 150 },
     headline_monthly_savings_estimate: null,
     headline_basis: null,
+    cost_curve: [],
+    decision_thresholds: { review: 34, block: 71 },
+    escalation_cutoffs: { watch: 0.8, elevated: 3.6 },
+    roc_auc: 0.9541,
   });
   mockedApi.costSensitivity.mockResolvedValue({ sensitivity: null, message: null });
   mockedApi.driftAnalysis.mockResolvedValue({ drift: null, message: null });
-  mockedApi.escalationAblation.mockResolvedValue({ report: null, message: "No ablation report yet" });
+  mockedApi.escalationAblation.mockResolvedValue({ report: null, summary: null, message: "No ablation report yet" });
   mockedApi.coldStartAnalysis.mockResolvedValue({ report: null, message: "No cold-start report yet" });
   mockedApi.consistencyAnalysis.mockResolvedValue({ consistency: null, message: "No consistency report yet" });
 }

@@ -255,7 +255,12 @@ python src/train_model.py
 Writes `models/risk_model.joblib`, `models/feature_cols.joblib`,
 `models/optimal_threshold.joblib`, and `models/eval_report.txt`
 (AUC/PR-AUC plus the cost-based threshold analysis — this is what
-you'll quote in the pitch).
+you'll quote in the pitch). It also writes two structured companions
+to that text report: `models/cost_summary.json` (savings, ROC-AUC —
+feeds the Overview tab's headline and "At a glance" panel) and
+`models/cost_curve.json` (per-threshold error counts, so
+`GET /api/cost-analysis` can serve the cost-vs-threshold curve for any
+cost assumption without re-scoring the test set).
 
 ### 4. Launch the API backend
 
@@ -665,7 +670,9 @@ scoring every transaction two ways: **baseline** (raw model score only,
 escalation forced to `NORMAL`) vs. **escalation-adjusted** (exactly what
 the live system does today). Run it yourself with
 `python src/escalation_ablation.py`; the full output is saved to
-`models/escalation_ablation_report.txt`.
+`models/escalation_ablation_report.txt`, alongside
+`models/escalation_ablation_summary.json` — the identical numbers in
+structured form, which is what the Model Validation tab charts.
 
 The escalation state itself is a **severity-weighted "risk pressure"**,
 not a raw count of risky verdicts: a BLOCK contributes more than a

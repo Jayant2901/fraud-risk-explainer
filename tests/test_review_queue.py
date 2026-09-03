@@ -169,6 +169,33 @@ class TestMetrics:
         assert metrics["total_disposed"] == 1
         assert metrics["overall_precision"] == 1.0
 
+    def test_disposition_counts_are_reported_separately(self, queue_factory):
+        queue = queue_factory()
+        queue.add(make_item("v1", 50.0))
+        queue.add(make_item("v2", 60.0))
+        queue.add(make_item("v3", 70.0))
+        queue.add(make_item("v4", 80.0))
+        queue.dispose("v1", CONFIRMED_FRAUD)
+        queue.dispose("v2", CONFIRMED_FRAUD)
+        queue.dispose("v3", FALSE_POSITIVE)
+        # v4 stays pending, counted in neither
+
+        metrics = queue.metrics()
+        assert metrics["confirmed_fraud_count"] == 2
+        assert metrics["false_positive_count"] == 1
+        assert (
+            metrics["confirmed_fraud_count"] + metrics["false_positive_count"]
+            == metrics["total_disposed"]
+        )
+
+    def test_disposition_counts_are_zero_before_anything_is_disposed(self, queue_factory):
+        queue = queue_factory()
+        queue.add(make_item("v1", 50.0))
+
+        metrics = queue.metrics()
+        assert metrics["confirmed_fraud_count"] == 0
+        assert metrics["false_positive_count"] == 0
+
 
 class TestReset:
     def test_reset_clears_everything(self, queue_factory):

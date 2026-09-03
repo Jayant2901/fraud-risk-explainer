@@ -1,6 +1,7 @@
 import { useEffect, useState } from "react";
 import { api, type CostAnalysis as CostAnalysisData, type CostSensitivity, type DriftAnalysis } from "../api/client";
-import { focusRing, typeScale } from "../theme";
+import { LineChart } from "./charts";
+import { focusRing, noticeClass, typeScale } from "../theme";
 
 const CHART_WIDTH = 480;
 const CHART_HEIGHT = 140;
@@ -117,13 +118,39 @@ export default function CostAnalysis() {
 
       {error && <p className="text-sm text-app-danger">{error}</p>}
 
+      {data && data.cost_curve.length > 0 && (
+        <div>
+          <h3 className={typeScale.subTitle}>Total cost at every threshold</h3>
+          <p className={`${typeScale.caption} mt-1 max-w-2xl`}>
+            The curve the threshold choice actually minimizes, recomputed live from the two
+            assumptions above. The marked point is the cheapest threshold; the dashed lines are
+            where the live system's REVIEW and BLOCK boundaries sit on the same axis.
+          </p>
+          <div className="mt-3 border border-app-rule rounded-xl p-4 max-w-2xl">
+            <LineChart
+              ariaLabel="Total expected cost across decision thresholds"
+              points={data.cost_curve.map((p) => ({ x: p.threshold, y: p.total_cost }))}
+              referenceLines={[
+                { x: data.decision_thresholds.review / 100, label: "REVIEW", status: "warning" },
+                { x: data.decision_thresholds.block / 100, label: "BLOCK", status: "danger" },
+              ]}
+              formatY={(v) => `₹${Math.round(v).toLocaleString("en-IN")}`}
+            />
+            <p className={`${typeScale.caption} mt-2`}>
+              x-axis: model probability threshold (0-1). y-axis: total expected cost over the{" "}
+              real test set.
+            </p>
+          </div>
+        </div>
+      )}
+
       {data && (
         data.eval_report ? (
           <pre className="border border-app-rule rounded-xl p-4 text-xs text-app-muted overflow-x-auto whitespace-pre">
             {data.eval_report}
           </pre>
         ) : (
-          <p className="text-sm text-amber-300 bg-amber-500/10 border border-amber-500/30 rounded-md px-3 py-2">
+          <p className={`${noticeClass("warning")} text-sm`}>
             Run <code>python src/train_model.py</code> first to generate the eval report and cost
             curve.
           </p>
@@ -145,7 +172,7 @@ export default function CostAnalysis() {
         {sensitivityError && <p className="text-sm text-app-danger mt-2">{sensitivityError}</p>}
 
         {sensitivityMessage && (
-          <p className="text-sm text-amber-300 bg-amber-500/10 border border-amber-500/30 rounded-md px-3 py-2 mt-2">
+          <p className={`${noticeClass("warning")} text-sm mt-2`}>
             {sensitivityMessage}
           </p>
         )}
@@ -208,7 +235,7 @@ export default function CostAnalysis() {
         {driftError && <p className="text-sm text-app-danger mt-2">{driftError}</p>}
 
         {driftMessage && (
-          <p className="text-sm text-amber-300 bg-amber-500/10 border border-amber-500/30 rounded-md px-3 py-2 mt-2">
+          <p className={`${noticeClass("warning")} text-sm mt-2`}>
             {driftMessage}
           </p>
         )}

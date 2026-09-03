@@ -19,7 +19,36 @@ vi.mock("../api/client", () => ({
 
 const mockedApi = vi.mocked(api);
 
+// The gauge's score arrival and the explanation typewriter are motion.
+// This suite asserts on settled content, so it runs as a reduced-motion
+// visitor — jsdom has no matchMedia at all, so this both provides it and
+// pins the preference.
+function mockReducedMotion() {
+  vi.stubGlobal("matchMedia", (query: string) => ({
+    matches: query.includes("prefers-reduced-motion: reduce"),
+    media: query,
+    addEventListener: () => {},
+    removeEventListener: () => {},
+    addListener: () => {},
+    removeListener: () => {},
+    onchange: null,
+    dispatchEvent: () => false,
+  }));
+}
+
 function mockHappyPathApis() {
+  mockReducedMotion();
+  mockedApi.costAnalysis.mockResolvedValue({
+    eval_report: null,
+    defaults: { avg_fraud_loss: 5000, avg_fp_cost: 150 },
+    params: { fraud_loss: 5000, fp_cost: 150 },
+    headline_monthly_savings_estimate: null,
+    headline_basis: null,
+    cost_curve: [],
+    decision_thresholds: { review: 34, block: 71 },
+    escalation_cutoffs: { watch: 0.8, elevated: 3.6 },
+    roc_auc: 0.9541,
+  });
   mockedApi.listEntities.mockResolvedValue({ entities: ["entity-a", "entity-b"] });
   mockedApi.listTransactions.mockResolvedValue({
     entity_id: "entity-a",
@@ -75,6 +104,7 @@ describe("LiveScoring", () => {
   });
 
   it("surfaces an error message if listEntities rejects", async () => {
+    mockHappyPathApis();
     mockedApi.listEntities.mockRejectedValue(new Error("network down"));
 
     render(<LiveScoring />);
@@ -123,7 +153,10 @@ describe("LiveScoring", () => {
       expect(payload.attach_to_entity_id).toBeUndefined();
 
       expect(await screen.findByText("12.3")).toBeInTheDocument();
-      expect(screen.getByText("ALLOW")).toBeInTheDocument();
+      // Twice: the gauge's band for this score, and the final automated
+      // decision. They agree here — the gauge reads the same thresholds
+      // the backend decided with.
+      expect(screen.getAllByText("ALLOW")).toHaveLength(2);
     });
 
     it("passes attach_to_entity_id when an entity is selected in the attach dropdown", async () => {
@@ -256,6 +289,121 @@ describe("LiveScoring", () => {
       await act(async () => { await vi.advanceTimersByTimeAsync(20000); });
       expect(mockedApi.score).not.toHaveBeenCalled();
       expect(screen.getByRole("button", { name: "Play" })).toBeInTheDocument();
+    });
+  });
+  describe("result gauge and explanation reveal", () => {
+    beforeEach(() => {
+      vi.clearAllMocks();
+    });
+
+    function mockScoredResult(overrides: Record<string, unknown> = {}) {
+      mockHappyPathApis();
+      mockedApi.score.mockResolvedValue({
+        risk_score: 80,
+        above_threshold: true,
+        top_factors: [],
+        escalation_before: {
+          state: "ELEVATED",
+          recent_verdict_count: 3,
+          recent_risky_count: 3,
+          recent_verdicts: ["BLOCK", "BLOCK", "REVIEW"],
+        },
+        decision: { action: "BLOCK", escalated_due_to_history: true },
+        verdict_id: "v-1",
+        ...overrides,
+      });
+      mockedApi.getExplanation.mockResolvedValue({ status: "pending" });
+    }
+
+    async function scoreOnce() {
+      render(<LiveScoring />);
+      await screen.findByRole("option", { name: "entity-a" });
+      // The button stays disabled until this entity's transactions land.
+      const scoreButton = screen.getByRole("button", { name: /Score this transaction/i });
+      await waitFor(() => expect(scoreButton).toBeEnabled());
+      fireEvent.click(scoreButton);
+      await waitFor(() => expect(mockedApi.score).toHaveBeenCalled());
+    }
+
+    it("renders the score in a gauge showing both real thresholds", async () => {
+      mockScoredResult();
+
+      await scoreOnce();
+
+      expect(await screen.findByText("80")).toBeInTheDocument();
+      // Tick marks come from the fetched decision_thresholds, not constants.
+      expect(screen.getByText("34")).toBeInTheDocument();
+      expect(screen.getByText("71")).toBeInTheDocument();
+    });
+
+    it("fetches the decision thresholds once, not per score", async () => {
+      mockScoredResult();
+
+      await scoreOnce();
+      fireEvent.click(screen.getByRole("button", { name: /Score this transaction/i }));
+      await waitFor(() => expect(mockedApi.score).toHaveBeenCalledTimes(2));
+
+      expect(mockedApi.costAnalysis).toHaveBeenCalledTimes(1);
+    });
+
+    it("calls out an escalated decision in words, not just color", async () => {
+      mockScoredResult();
+
+      await scoreOnce();
+
+      expect(
+        await screen.findByText(/Escalated due to this entity's recent history/i)
+      ).toBeInTheDocument();
+    });
+
+    it("says nothing about escalation when the score alone drove the decision", async () => {
+      mockScoredResult({ decision: { action: "BLOCK", escalated_due_to_history: false } });
+
+      await scoreOnce();
+
+      expect(await screen.findByText("80")).toBeInTheDocument();
+      expect(screen.queryByText(/Escalated due to this entity's recent history/i)).not.toBeInTheDocument();
+    });
+
+    it("still renders the score if the thresholds request fails", async () => {
+      mockScoredResult();
+      mockedApi.costAnalysis.mockRejectedValue(new Error("no cost analysis"));
+
+      await scoreOnce();
+
+      expect(await screen.findByText("80")).toBeInTheDocument();
+      expect(screen.queryByText("34")).not.toBeInTheDocument();
+    });
+
+    it("reveals the full explanation and rationale once they arrive", async () => {
+      mockScoredResult();
+      mockedApi.getExplanation.mockResolvedValue({
+        status: "ready",
+        verdict: {
+          explanation: "This card has three prior blocked attempts today.",
+          action: "BLOCK",
+          escalated_due_to_history: true,
+          rationale: "Repeat velocity from one fingerprint.",
+        },
+      });
+
+      await scoreOnce();
+
+      // Under reduced motion both land complete and untruncated.
+      expect(
+        await screen.findByText("This card has three prior blocked attempts today.")
+      ).toBeInTheDocument();
+      expect(
+        await screen.findByText(/Repeat velocity from one fingerprint\./)
+      ).toBeInTheDocument();
+    });
+
+    it("keeps the pending state until the explanation is ready", async () => {
+      mockScoredResult();
+
+      await scoreOnce();
+
+      expect(await screen.findByText(/Generating explanation/i)).toBeInTheDocument();
     });
   });
 });

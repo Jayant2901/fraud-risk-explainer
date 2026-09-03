@@ -53,7 +53,12 @@ from logging_utils import configure_logging, RequestIDMiddleware
 from decision_rules import decide_action, load_decision_thresholds
 from risk_explainer import RiskExplainer
 from llm_agent import RiskExplainerAgent
-from entity_memory import create_entity_memory, _compute_escalation_state
+from entity_memory import (
+    create_entity_memory,
+    _compute_escalation_state,
+    DEFAULT_WATCH_PRESSURE_THRESHOLD,
+    DEFAULT_ELEVATED_PRESSURE_THRESHOLD,
+)
 from redis_utils import get_redis_client, KeyedCache
 from review_queue import create_review_queue, UnknownVerdictError, AlreadyDisposedError, NOTE_MAX_LEN, _now_iso
 from data_utils import load_raw_data, engineer_features
@@ -139,11 +144,13 @@ router = APIRouter(dependencies=[Depends(verify_api_key)])
 
 EVAL_REPORT_PATH = "models/eval_report.txt"
 ESCALATION_ABLATION_REPORT_PATH = "models/escalation_ablation_report.txt"
+ESCALATION_ABLATION_SUMMARY_PATH = "models/escalation_ablation_summary.json"
 COST_SENSITIVITY_REPORT_PATH = "models/cost_sensitivity_report.json"
 DRIFT_REPORT_PATH = "models/drift_report.json"
 CONSISTENCY_REPORT_PATH = "models/consistency_report.json"
 COLD_START_REPORT_PATH = "models/cold_start_report.txt"
 COST_SUMMARY_PATH = "models/cost_summary.json"
+COST_CURVE_PATH = "models/cost_curve.json"
 
 # --- Singletons (model, explainer, agent, entity memory) ---------------
 # REDIS_URL is read once here, at process startup — same as any other
@@ -530,7 +537,13 @@ def get_cost_analysis(
     # train_model.py has produced models/cost_summary.json; None (with
     # no basis) otherwise, same "generate one first" pattern as every
     # other report field on this endpoint.
+    cost_curve_rows = []
+    if os.path.exists(COST_CURVE_PATH):
+        with open(COST_CURVE_PATH, encoding="utf-8") as f:
+            cost_curve_rows = json.load(f)
+
     headline = None
+    cost_summary = {}
     if os.path.exists(COST_SUMMARY_PATH):
         with open(COST_SUMMARY_PATH, encoding="utf-8") as f:
             cost_summary = json.load(f)
@@ -547,6 +560,27 @@ def get_cost_analysis(
         "params": {"fraud_loss": fraud_loss, "fp_cost": fp_cost},
         "headline_monthly_savings_estimate": headline["headline_monthly_savings_estimate"] if headline else None,
         "headline_basis": headline["basis"] if headline else None,
+        # The live decision boundary and escalation cutoffs, so the
+        # frontend's "At a glance" panel reads the real numbers this
+        # process is actually deciding with rather than restating
+        # hardcoded copies of them.
+        # Total cost is a pure function of the persisted error counts and
+        # the two cost assumptions (see src/cost_analysis.py's cost_curve),
+        # so the curve follows the caller's fraud_loss/fp_cost without
+        # re-scoring the test set.
+        "cost_curve": [
+            {
+                "threshold": row["threshold"],
+                "total_cost": row["false_negatives"] * fraud_loss + row["false_positives"] * fp_cost,
+            }
+            for row in cost_curve_rows
+        ],
+        "decision_thresholds": get_decision_thresholds(),
+        "escalation_cutoffs": {
+            "watch": DEFAULT_WATCH_PRESSURE_THRESHOLD,
+            "elevated": DEFAULT_ELEVATED_PRESSURE_THRESHOLD,
+        },
+        "roc_auc": cost_summary.get("roc_auc"),
     }
 
 
@@ -566,10 +600,15 @@ def get_escalation_ablation():
     if not os.path.exists(ESCALATION_ABLATION_REPORT_PATH):
         return {
             "report": None,
+            "summary": None,
             "message": "No ablation report yet — run `python src/escalation_ablation.py` to generate one.",
         }
+    summary = None
+    if os.path.exists(ESCALATION_ABLATION_SUMMARY_PATH):
+        with open(ESCALATION_ABLATION_SUMMARY_PATH, encoding="utf-8") as f:
+            summary = json.load(f)
     with open(ESCALATION_ABLATION_REPORT_PATH, encoding="utf-8") as f:
-        return {"report": f.read(), "message": None}
+        return {"report": f.read(), "summary": summary, "message": None}
 
 
 @router.get("/api/drift-analysis")

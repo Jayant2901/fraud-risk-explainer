@@ -4,6 +4,7 @@ from escalation_ablation import (
     compute_strategy_metrics,
     compute_escalation_flip_precision,
     build_report,
+    build_summary,
     compute_cost,
     replay_with_pressure_escalation,
     sweep_pressure_thresholds,
@@ -162,6 +163,44 @@ class TestBuildSweepReport:
         chosen_lines = [line for line in report.splitlines() if "chosen (lowest cost)" in line]
         assert len(chosen_lines) == 1
         assert "3.6" in chosen_lines[0]
+
+
+class TestBuildSummary:
+    """The structured summary must never drift from the text report —
+    both come from the same three computations over the same replay."""
+
+    REPLAY = pd.DataFrame([
+        {"is_fraud": 1, "risk_score": 90.0, "baseline_action": "BLOCK",
+         "adjusted_action": "BLOCK", "escalated_due_to_history": False},
+        {"is_fraud": 1, "risk_score": 30.0, "baseline_action": "ALLOW",
+         "adjusted_action": "REVIEW", "escalated_due_to_history": True},
+        {"is_fraud": 0, "risk_score": 20.0, "baseline_action": "ALLOW",
+         "adjusted_action": "REVIEW", "escalated_due_to_history": True},
+    ])
+
+    def test_reports_the_same_numbers_the_text_report_does(self):
+        summary = build_summary(self.REPLAY, [])
+        report = build_report(self.REPLAY)
+
+        # Baseline catches 1 of 2 frauds; escalation catches both.
+        assert summary["baseline"]["recall"] == 0.5
+        assert summary["adjusted"]["recall"] == 1.0
+        assert f"{summary['baseline']['recall']:.4f}" in report
+        assert f"{summary['adjusted']['recall']:.4f}" in report
+
+    def test_carries_flip_precision_and_transaction_count(self):
+        summary = build_summary(self.REPLAY, [])
+
+        assert summary["n_transactions"] == 3
+        assert summary["flips"]["n_flips"] == 2
+        assert summary["flips"]["n_flips_fraud"] == 1
+        assert summary["flips"]["precision"] == 0.5
+
+    def test_passes_the_sweep_grid_through_untouched(self):
+        sweep = [{"watch_threshold": 0.8, "elevated_threshold": 3.6, "recall": 0.9,
+                  "false_flag_rate": 0.1, "cost": 100.0}]
+
+        assert build_summary(self.REPLAY, sweep)["sweep"] == sweep
 
 
 class TestBuildReport:
