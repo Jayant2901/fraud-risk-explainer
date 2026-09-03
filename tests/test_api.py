@@ -377,6 +377,117 @@ class TestReviewQueue:
         assert r.status_code == 400
 
 
+class TestScoreCustom:
+    """POST /api/score-custom — scoring a transaction that isn't one of
+    the ~30 cached historical entities. FakeExplainer (conftest.py)
+    returns a fixed risk_score=42.0 regardless of the txn dict passed
+    in, which decide_action() turns into REVIEW for an unescalated
+    entity — so most of these land in the review queue too, same as
+    /api/score."""
+
+    def test_minimal_payload_returns_a_valid_score_and_decision(self, client, auth_headers):
+        r = client.post("/api/score-custom", json={"TransactionAmt": 250.0}, headers=auth_headers)
+        assert r.status_code == 200
+        body = r.json()
+        assert body["risk_score"] == 42.0
+        assert body["decision"]["action"] in {"ALLOW", "REVIEW", "BLOCK"}
+        assert "verdict_id" in body
+
+    def test_all_optional_fields_omitted_does_not_crash(self, client, auth_headers):
+        r = client.post("/api/score-custom", json={"TransactionAmt": 10.0}, headers=auth_headers)
+        assert r.status_code == 200
+
+    def test_full_payload_is_accepted(self, client, auth_headers):
+        r = client.post(
+            "/api/score-custom",
+            json={
+                "TransactionAmt": 500.0,
+                "ProductCD": "W",
+                "card4": "visa",
+                "card6": "debit",
+                "P_emaildomain": "gmail.com",
+                "R_emaildomain": "",
+                "DeviceType": "mobile",
+                "addr1": 300,
+                "addr2": 87,
+                "hour_of_day": 14,
+            },
+            headers=auth_headers,
+        )
+        assert r.status_code == 200
+
+    def test_missing_required_field_returns_422(self, client, auth_headers):
+        r = client.post("/api/score-custom", json={"ProductCD": "W"}, headers=auth_headers)
+        assert r.status_code == 422
+
+    def test_hour_of_day_out_of_range_returns_422(self, client, auth_headers):
+        r = client.post(
+            "/api/score-custom", json={"TransactionAmt": 100.0, "hour_of_day": 24}, headers=auth_headers
+        )
+        assert r.status_code == 422
+
+    def test_without_attach_escalation_is_normal_baseline(self, client, auth_headers):
+        r = client.post("/api/score-custom", json={"TransactionAmt": 100.0}, headers=auth_headers)
+        assert r.json()["escalation_before"]["state"] == "NORMAL"
+        assert r.json()["escalation_before"]["recent_verdict_count"] == 0
+
+    def test_with_attach_escalation_matches_that_entitys_real_current_state(self, client, auth_headers):
+        # Push entity-a into a non-empty history first via a real replay score.
+        client.post("/api/score", json={"entity_id": "entity-a", "txn_index": 0}, headers=auth_headers)
+        state_before = client.get("/api/entities/entity-a/escalation", headers=auth_headers).json()
+
+        r = client.post(
+            "/api/score-custom",
+            json={"TransactionAmt": 100.0, "attach_to_entity_id": "entity-a"},
+            headers=auth_headers,
+        )
+        assert r.json()["escalation_before"] == state_before
+
+    def test_without_attach_no_entity_history_is_ever_touched(self, client, auth_headers):
+        # Score the same hypothetical transaction twice with no attach —
+        # nothing should accumulate anywhere.
+        payload = {"TransactionAmt": 100.0}
+        client.post("/api/score-custom", json=payload, headers=auth_headers)
+        client.post("/api/score-custom", json=payload, headers=auth_headers)
+
+        for entity_id in ("entity-a", "entity-b"):
+            state = client.get(f"/api/entities/{entity_id}/escalation", headers=auth_headers).json()
+            assert state["recent_verdict_count"] == 0
+
+    def test_with_attach_records_the_verdict_into_that_entitys_history(self, client, auth_headers):
+        client.post(
+            "/api/score-custom",
+            json={"TransactionAmt": 100.0, "attach_to_entity_id": "entity-a"},
+            headers=auth_headers,
+        )
+        state = client.get("/api/entities/entity-a/escalation", headers=auth_headers).json()
+        assert state["recent_verdict_count"] == 1
+
+    def test_reuses_the_same_decide_action_pipeline_as_score(self, client, auth_headers):
+        # FakeExplainer's fixed risk_score=42.0 -> decide_action() ->
+        # REVIEW for an unescalated entity, identical to /api/score.
+        r = client.post("/api/score-custom", json={"TransactionAmt": 100.0}, headers=auth_headers)
+        assert r.json()["decision"]["action"] == "REVIEW"
+
+    def test_flagged_custom_verdict_reaches_the_review_queue(self, client, auth_headers):
+        r = client.post("/api/score-custom", json={"TransactionAmt": 100.0}, headers=auth_headers)
+        verdict_id = r.json()["verdict_id"]
+
+        items = client.get("/api/review-queue?status=pending", headers=auth_headers).json()["items"]
+        assert any(i["verdict_id"] == verdict_id for i in items)
+
+    def test_schedules_a_background_explanation(self, client, auth_headers):
+        r = client.post("/api/score-custom", json={"TransactionAmt": 100.0}, headers=auth_headers)
+        verdict_id = r.json()["verdict_id"]
+        exp = client.get(f"/api/explanations/{verdict_id}", headers=auth_headers)
+        assert exp.status_code == 200
+        assert exp.json()["status"] == "ready"
+
+    def test_requires_api_key(self, client):
+        r = client.post("/api/score-custom", json={"TransactionAmt": 100.0})
+        assert r.status_code == 401
+
+
 class TestCostAnalysis:
     def test_returns_defaults_when_no_params_given(self, client, auth_headers):
         r = client.get("/api/cost-analysis", headers=auth_headers)

@@ -21,8 +21,9 @@ Requires:
     same state is backed by Redis instead — survives restarts, shared
     across workers. See src/entity_memory.py and src/redis_utils.py.
 
-POST /api/score is rate-limited to 30/minute per caller (X-API-Key if
-present, else source IP) — see the `limiter` set up below.
+POST /api/score and POST /api/score-custom are each rate-limited to
+30/minute per caller (X-API-Key if present, else source IP) — see the
+`limiter` set up below.
 """
 import json
 import logging
@@ -42,7 +43,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.routing import APIRouter
 from fastapi.security import APIKeyHeader
 from prometheus_fastapi_instrumentator import Instrumentator
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 from slowapi import Limiter, _rate_limit_exceeded_handler
 from slowapi.errors import RateLimitExceeded
 from slowapi.middleware import SlowAPIMiddleware
@@ -52,7 +53,7 @@ from logging_utils import configure_logging, RequestIDMiddleware
 from decision_rules import decide_action
 from risk_explainer import RiskExplainer
 from llm_agent import RiskExplainerAgent
-from entity_memory import create_entity_memory
+from entity_memory import create_entity_memory, _compute_escalation_state
 from redis_utils import get_redis_client, KeyedCache
 from review_queue import create_review_queue, UnknownVerdictError, AlreadyDisposedError
 from data_utils import load_raw_data, engineer_features
@@ -237,6 +238,35 @@ class ScoreRequest(BaseModel):
     txn_index: int
 
 
+class CustomTransactionRequest(BaseModel):
+    """Fields a person could reasonably fill in by hand for a transaction
+    that isn't one of the ~30 cached historical entities. Everything
+    RiskExplainer.score_transaction expects beyond these (C1-C14,
+    D-features, V-features, M-features, entity_prior_* features, ...) is
+    left missing and handled exactly like any other missing feature —
+    see RiskExplainer.score_transaction's docstring. TransactionAmt is
+    the only required field.
+    """
+    TransactionAmt: float
+    ProductCD: str | None = None
+    card4: str | None = None
+    card6: str | None = None
+    P_emaildomain: str | None = None
+    R_emaildomain: str | None = None
+    DeviceType: str | None = None
+    addr1: float | None = None
+    addr2: float | None = None
+    hour_of_day: int | None = Field(default=None, ge=0, le=23)
+    # When set to an existing entity id, the custom transaction is scored
+    # against that entity's *current* real escalation state, and — since
+    # this is an explicit opt-in — the resulting verdict is recorded into
+    # that entity's real history. When unset, escalation is the NORMAL
+    # baseline (this dataset's actual cold-start case) and nothing is
+    # recorded anywhere, so a hypothetical "what if" can never silently
+    # pollute a real entity's trajectory.
+    attach_to_entity_id: str | None = None
+
+
 class ResetRequest(BaseModel):
     entity_id: str
 
@@ -354,6 +384,64 @@ def score(
     if idempotency_key is not None:
         _idempotency_cache.put(idempotency_key, response)
     return response
+
+
+@router.post("/api/score-custom")
+@limiter.limit("30/minute")
+def score_custom(
+    request: Request,
+    req: CustomTransactionRequest,
+    background_tasks: BackgroundTasks,
+):
+    # Only the fields the caller actually provided go into the model
+    # input — everything else stays missing (-> NaN), exactly the same
+    # path RiskExplainer.score_transaction already takes for any missing
+    # feature on a replayed historical transaction.
+    txn = req.model_dump(exclude={"attach_to_entity_id"}, exclude_none=True)
+
+    explainer = get_explainer()
+    result = explainer.score_transaction(txn)
+
+    if req.attach_to_entity_id:
+        escalation_before = _memory.get_escalation_state(req.attach_to_entity_id)
+    else:
+        escalation_before = _compute_escalation_state(None, [])
+
+    # Same decide_action()/baseline pipeline /api/score uses — a custom
+    # transaction can never gate itself differently than a replayed one.
+    decision = decide_action(result["risk_score"], escalation_before)
+    baseline_decision = decide_action(result["risk_score"], {"state": "NORMAL"})
+
+    if req.attach_to_entity_id:
+        _memory.record_verdict(req.attach_to_entity_id, decision["action"], result["risk_score"])
+
+    verdict_id = str(uuid.uuid4())
+    _explanations_cache.put(verdict_id, {"status": "pending"})
+    background_tasks.add_task(
+        _generate_explanation, verdict_id, result["risk_score"], result["top_factors"], escalation_before
+    )
+
+    if decision["action"] != "ALLOW":
+        _review_queue.add({
+            "verdict_id": verdict_id,
+            "entity_id": req.attach_to_entity_id or "custom-transaction",
+            "txn_index": 0,
+            "risk_score": result["risk_score"],
+            "decision": decision,
+            "baseline_decision": baseline_decision,
+            "escalated_due_to_history": decision["escalated_due_to_history"],
+            "disposition": None,
+            "disposed_at": None,
+        })
+
+    return {
+        "risk_score": result["risk_score"],
+        "above_threshold": result["above_threshold"],
+        "top_factors": result["top_factors"],
+        "escalation_before": escalation_before,
+        "decision": decision,
+        "verdict_id": verdict_id,
+    }
 
 
 @router.get("/api/explanations/{verdict_id}")

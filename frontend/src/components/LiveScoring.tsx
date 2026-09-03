@@ -23,7 +23,25 @@ function riskBand(score: number) {
   return { label: "LOW RISK (model)", status: "success" as const };
 }
 
+type Mode = "replay" | "custom";
+
+// A plausible legitimate-looking transaction, pre-filled so the custom
+// form is immediately submittable rather than starting blank.
+const DEFAULT_CUSTOM_FORM = {
+  TransactionAmt: 100,
+  ProductCD: "W",
+  card4: "visa",
+  card6: "debit",
+  P_emaildomain: "gmail.com",
+  R_emaildomain: "",
+  DeviceType: "mobile",
+  addr1: 300,
+  addr2: 87,
+  hour_of_day: 14,
+};
+
 export default function LiveScoring() {
+  const [mode, setMode] = useState<Mode>("replay");
   const [entities, setEntities] = useState<string[]>([]);
   const [selectedEntity, setSelectedEntity] = useState<string>("");
   const [txns, setTxns] = useState<TxnSummary[]>([]);
@@ -35,6 +53,8 @@ export default function LiveScoring() {
   const [loadingTxns, setLoadingTxns] = useState(false);
   const [scoring, setScoring] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [customForm, setCustomForm] = useState(DEFAULT_CUSTOM_FORM);
+  const [customAttachEntityId, setCustomAttachEntityId] = useState<string>("");
 
   useEffect(() => {
     api
@@ -120,6 +140,40 @@ export default function LiveScoring() {
     }
   }
 
+  async function handleScoreCustom() {
+    setScoring(true);
+    setError(null);
+    try {
+      const attach = customAttachEntityId || undefined;
+      const r = await api.scoreCustom({
+        TransactionAmt: customForm.TransactionAmt,
+        ProductCD: customForm.ProductCD || undefined,
+        card4: customForm.card4 || undefined,
+        card6: customForm.card6 || undefined,
+        P_emaildomain: customForm.P_emaildomain || undefined,
+        R_emaildomain: customForm.R_emaildomain || undefined,
+        DeviceType: customForm.DeviceType || undefined,
+        addr1: customForm.addr1,
+        addr2: customForm.addr2,
+        hour_of_day: customForm.hour_of_day,
+        attach_to_entity_id: attach,
+      });
+      setResult(r);
+      if (attach) {
+        const esc = await api.getEscalation(attach);
+        setEscalation(esc);
+      } else {
+        // Nothing was recorded anywhere — the "before" state IS the
+        // current state, so there's nothing further to refetch.
+        setEscalation(r.escalation_before);
+      }
+    } catch (e) {
+      setError(String(e));
+    } finally {
+      setScoring(false);
+    }
+  }
+
   const escStatus = escalation ? escalationStatus[escalation.state] : null;
 
   return (
@@ -127,64 +181,254 @@ export default function LiveScoring() {
       <aside className="space-y-4">
         <h2 className={`${typeScale.subTitle} uppercase tracking-wide text-app-faint`}>Entity Session</h2>
 
-        <div>
-          <label htmlFor="entity-select" className={`block ${typeScale.caption} mb-1`}>
-            Entity (card/account fingerprint)
-          </label>
-          <select
-            id="entity-select"
-            className={`w-full bg-app-surface border border-app-rule rounded-md px-2 py-1.5 text-sm text-app-ink disabled:opacity-50 ${focusRing}`}
-            value={selectedEntity}
-            disabled={loadingEntities}
-            onChange={(e) => setSelectedEntity(e.target.value)}
+        <div role="tablist" className="flex gap-1 border-b border-app-rule">
+          <button
+            role="tab"
+            aria-selected={mode === "replay"}
+            onClick={() => setMode("replay")}
+            className={`px-2 py-1.5 text-xs font-medium border-b-2 ${focusRing} ${
+              mode === "replay" ? "border-app-accent text-app-accent-soft" : "border-transparent text-app-faint hover:text-app-muted"
+            }`}
           >
-            {entities.map((id) => (
-              <option key={id} value={id}>
-                {id}
-              </option>
-            ))}
-          </select>
+            Replay historical
+          </button>
+          <button
+            role="tab"
+            aria-selected={mode === "custom"}
+            onClick={() => setMode("custom")}
+            className={`px-2 py-1.5 text-xs font-medium border-b-2 ${focusRing} ${
+              mode === "custom" ? "border-app-accent text-app-accent-soft" : "border-transparent text-app-faint hover:text-app-muted"
+            }`}
+          >
+            Score custom
+          </button>
         </div>
 
-        <p className={typeScale.caption}>
-          {loadingTxns ? "Loading..." : `${txns.length} transactions in this entity's sequence`}
-        </p>
+        {mode === "replay" ? (
+          <>
+            <div>
+              <label htmlFor="entity-select" className={`block ${typeScale.caption} mb-1`}>
+                Entity (card/account fingerprint)
+              </label>
+              <select
+                id="entity-select"
+                className={`w-full bg-app-surface border border-app-rule rounded-md px-2 py-1.5 text-sm text-app-ink disabled:opacity-50 ${focusRing}`}
+                value={selectedEntity}
+                disabled={loadingEntities}
+                onChange={(e) => setSelectedEntity(e.target.value)}
+              >
+                {entities.map((id) => (
+                  <option key={id} value={id}>
+                    {id}
+                  </option>
+                ))}
+              </select>
+            </div>
 
-        <div>
-          <label htmlFor="txn-index-slider" className={`block ${typeScale.caption} mb-1`}>
-            Transaction # in sequence: {txnIdx}
-          </label>
-          <input
-            id="txn-index-slider"
-            type="range"
-            min={0}
-            max={Math.max(txns.length - 1, 0)}
-            value={txnIdx}
-            onChange={(e) => setTxnIdx(Number(e.target.value))}
-            disabled={!txns.length}
-            className={`w-full accent-app-accent ${focusRing}`}
-          />
-          {currentTxn && (
-            <p className={`${typeScale.caption} mt-1`}>
-              ₹{currentTxn.TransactionAmt.toFixed(2)} · {currentTxn.ProductCD}
+            <p className={typeScale.caption}>
+              {loadingTxns ? "Loading..." : `${txns.length} transactions in this entity's sequence`}
             </p>
-          )}
-        </div>
 
-        <button
-          onClick={handleReset}
-          className={`w-full text-sm px-3 py-1.5 rounded-md border border-transparent text-app-muted hover:bg-app-ink/5 ${buttonLabel} ${buttonBase}`}
-        >
-          Reset entity memory
-        </button>
+            <div>
+              <label htmlFor="txn-index-slider" className={`block ${typeScale.caption} mb-1`}>
+                Transaction # in sequence: {txnIdx}
+              </label>
+              <input
+                id="txn-index-slider"
+                type="range"
+                min={0}
+                max={Math.max(txns.length - 1, 0)}
+                value={txnIdx}
+                onChange={(e) => setTxnIdx(Number(e.target.value))}
+                disabled={!txns.length}
+                className={`w-full accent-app-accent ${focusRing}`}
+              />
+              {currentTxn && (
+                <p className={`${typeScale.caption} mt-1`}>
+                  ₹{currentTxn.TransactionAmt.toFixed(2)} · {currentTxn.ProductCD}
+                </p>
+              )}
+            </div>
 
-        <button
-          onClick={handleScore}
-          disabled={!txns.length || scoring}
-          className={`w-full text-sm font-medium px-3 py-2 rounded-md border border-app-accent text-app-accent-soft bg-transparent hover:bg-app-accent/10 ${buttonLabel} ${buttonBase}`}
-        >
-          {scoring ? "Scoring..." : "Score this transaction"}
-        </button>
+            <button
+              onClick={handleReset}
+              className={`w-full text-sm px-3 py-1.5 rounded-md border border-transparent text-app-muted hover:bg-app-ink/5 ${buttonLabel} ${buttonBase}`}
+            >
+              Reset entity memory
+            </button>
+
+            <button
+              onClick={handleScore}
+              disabled={!txns.length || scoring}
+              className={`w-full text-sm font-medium px-3 py-2 rounded-md border border-app-accent text-app-accent-soft bg-transparent hover:bg-app-accent/10 ${buttonLabel} ${buttonBase}`}
+            >
+              {scoring ? "Scoring..." : "Score this transaction"}
+            </button>
+          </>
+        ) : (
+          <>
+            <div>
+              <label htmlFor="custom-amount" className={`block ${typeScale.caption} mb-1`}>
+                Transaction amount (₹) *
+              </label>
+              <input
+                id="custom-amount"
+                type="number"
+                value={customForm.TransactionAmt}
+                onChange={(e) => setCustomForm({ ...customForm, TransactionAmt: Number(e.target.value) })}
+                className={`w-full bg-app-surface border border-app-rule rounded-md px-2 py-1.5 text-sm text-app-ink ${focusRing}`}
+              />
+            </div>
+
+            <div>
+              <label htmlFor="custom-product" className={`block ${typeScale.caption} mb-1`}>
+                Product code
+              </label>
+              <input
+                id="custom-product"
+                type="text"
+                value={customForm.ProductCD}
+                onChange={(e) => setCustomForm({ ...customForm, ProductCD: e.target.value })}
+                className={`w-full bg-app-surface border border-app-rule rounded-md px-2 py-1.5 text-sm text-app-ink ${focusRing}`}
+              />
+            </div>
+
+            <div className="grid grid-cols-2 gap-2">
+              <div>
+                <label htmlFor="custom-card4" className={`block ${typeScale.caption} mb-1`}>
+                  Card network
+                </label>
+                <input
+                  id="custom-card4"
+                  type="text"
+                  value={customForm.card4}
+                  onChange={(e) => setCustomForm({ ...customForm, card4: e.target.value })}
+                  className={`w-full bg-app-surface border border-app-rule rounded-md px-2 py-1.5 text-sm text-app-ink ${focusRing}`}
+                />
+              </div>
+              <div>
+                <label htmlFor="custom-card6" className={`block ${typeScale.caption} mb-1`}>
+                  Card type
+                </label>
+                <input
+                  id="custom-card6"
+                  type="text"
+                  value={customForm.card6}
+                  onChange={(e) => setCustomForm({ ...customForm, card6: e.target.value })}
+                  className={`w-full bg-app-surface border border-app-rule rounded-md px-2 py-1.5 text-sm text-app-ink ${focusRing}`}
+                />
+              </div>
+            </div>
+
+            <div>
+              <label htmlFor="custom-p-email" className={`block ${typeScale.caption} mb-1`}>
+                Purchaser email domain
+              </label>
+              <input
+                id="custom-p-email"
+                type="text"
+                value={customForm.P_emaildomain}
+                onChange={(e) => setCustomForm({ ...customForm, P_emaildomain: e.target.value })}
+                className={`w-full bg-app-surface border border-app-rule rounded-md px-2 py-1.5 text-sm text-app-ink ${focusRing}`}
+              />
+            </div>
+
+            <div>
+              <label htmlFor="custom-r-email" className={`block ${typeScale.caption} mb-1`}>
+                Recipient email domain
+              </label>
+              <input
+                id="custom-r-email"
+                type="text"
+                value={customForm.R_emaildomain}
+                onChange={(e) => setCustomForm({ ...customForm, R_emaildomain: e.target.value })}
+                className={`w-full bg-app-surface border border-app-rule rounded-md px-2 py-1.5 text-sm text-app-ink ${focusRing}`}
+              />
+            </div>
+
+            <div>
+              <label htmlFor="custom-device" className={`block ${typeScale.caption} mb-1`}>
+                Device type
+              </label>
+              <input
+                id="custom-device"
+                type="text"
+                value={customForm.DeviceType}
+                onChange={(e) => setCustomForm({ ...customForm, DeviceType: e.target.value })}
+                className={`w-full bg-app-surface border border-app-rule rounded-md px-2 py-1.5 text-sm text-app-ink ${focusRing}`}
+              />
+            </div>
+
+            <div className="grid grid-cols-2 gap-2">
+              <div>
+                <label htmlFor="custom-addr1" className={`block ${typeScale.caption} mb-1`}>
+                  Billing region
+                </label>
+                <input
+                  id="custom-addr1"
+                  type="number"
+                  value={customForm.addr1}
+                  onChange={(e) => setCustomForm({ ...customForm, addr1: Number(e.target.value) })}
+                  className={`w-full bg-app-surface border border-app-rule rounded-md px-2 py-1.5 text-sm text-app-ink ${focusRing}`}
+                />
+              </div>
+              <div>
+                <label htmlFor="custom-addr2" className={`block ${typeScale.caption} mb-1`}>
+                  Billing country
+                </label>
+                <input
+                  id="custom-addr2"
+                  type="number"
+                  value={customForm.addr2}
+                  onChange={(e) => setCustomForm({ ...customForm, addr2: Number(e.target.value) })}
+                  className={`w-full bg-app-surface border border-app-rule rounded-md px-2 py-1.5 text-sm text-app-ink ${focusRing}`}
+                />
+              </div>
+            </div>
+
+            <div>
+              <label htmlFor="custom-hour" className={`block ${typeScale.caption} mb-1`}>
+                Hour of day (0-23)
+              </label>
+              <input
+                id="custom-hour"
+                type="number"
+                min={0}
+                max={23}
+                value={customForm.hour_of_day}
+                onChange={(e) => setCustomForm({ ...customForm, hour_of_day: Number(e.target.value) })}
+                className={`w-full bg-app-surface border border-app-rule rounded-md px-2 py-1.5 text-sm text-app-ink ${focusRing}`}
+              />
+            </div>
+
+            <div>
+              <label htmlFor="custom-attach" className={`block ${typeScale.caption} mb-1`}>
+                Attach to entity
+              </label>
+              <select
+                id="custom-attach"
+                className={`w-full bg-app-surface border border-app-rule rounded-md px-2 py-1.5 text-sm text-app-ink ${focusRing}`}
+                value={customAttachEntityId}
+                onChange={(e) => setCustomAttachEntityId(e.target.value)}
+              >
+                <option value="">None — brand new entity</option>
+                {entities.map((id) => (
+                  <option key={id} value={id}>
+                    {id}
+                  </option>
+                ))}
+              </select>
+            </div>
+
+            <button
+              onClick={handleScoreCustom}
+              disabled={scoring}
+              className={`w-full text-sm font-medium px-3 py-2 rounded-md border border-app-accent text-app-accent-soft bg-transparent hover:bg-app-accent/10 ${buttonLabel} ${buttonBase}`}
+            >
+              {scoring ? "Scoring..." : "Score this transaction"}
+            </button>
+          </>
+        )}
 
         {error && <p className="text-xs text-app-danger break-words">{error}</p>}
       </aside>
@@ -192,9 +436,20 @@ export default function LiveScoring() {
       <section>
         {!result ? (
           <div className="border border-dashed border-app-rule rounded-xl p-6 text-app-faint text-sm">
-            Pick an entity and transaction number in the sidebar, then click{" "}
-            <span className="text-app-ink font-medium">Score this transaction</span>. Score several
-            transactions from the same entity in sequence to see the escalation state build up.
+            {mode === "replay" ? (
+              <>
+                Pick an entity and transaction number in the sidebar, then click{" "}
+                <span className="text-app-ink font-medium">Score this transaction</span>. Score several
+                transactions from the same entity in sequence to see the escalation state build up.
+              </>
+            ) : (
+              <>
+                Fill in the fields for a transaction that doesn't exist in the historical sample, then
+                click <span className="text-app-ink font-medium">Score this transaction</span>. Optionally
+                attach it to an existing entity to see how its current escalation state would treat this
+                new transaction.
+              </>
+            )}
           </div>
         ) : (
           <div className="grid grid-cols-1 md:grid-cols-[1fr_2fr] gap-6">

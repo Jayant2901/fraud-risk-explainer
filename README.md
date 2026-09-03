@@ -231,13 +231,31 @@ For a production build: `npm run build` (outputs static assets to
 `frontend/dist/`), served by any static host or reverse-proxied behind
 the FastAPI backend.
 
-**Live Scoring tab:** pick an entity, walk through its transactions in
-sequence, and watch the escalation state build up as verdicts
-accumulate — this is the part to demo live, since it's the piece a
-static classifier genuinely can't do. The automated decision (action +
-escalation flag) appears instantly; the "AI Reviewer Explanation" panel
-below it fills in a moment later once the background LLM call finishes
-— that gap is intentional, not a loading bug (see point 4 above).
+**Live Scoring tab:** two modes, toggled at the top of the sidebar.
+
+- *Replay historical* — pick one of the ~30 cached entities, walk
+  through its transactions in sequence, and watch the escalation state
+  build up as verdicts accumulate. This is the part to demo live, since
+  it's the piece a static classifier genuinely can't do.
+- *Score custom* — construct a transaction from scratch (amount,
+  product code, card network/type, email domains, device type, billing
+  region/country, hour of day) that isn't in the historical sample at
+  all, via `POST /api/score-custom`. Anything not filled in is left
+  missing and handled exactly like any other missing feature (see
+  `RiskExplainer.score_transaction`). Optionally attach it to an
+  existing entity to score it against that entity's *current* real
+  escalation state instead of a cold start — doing so also records the
+  resulting verdict into that entity's real history, since attaching is
+  an explicit opt-in; leaving it unattached never touches any entity's
+  history, no matter how many times the same hypothetical is scored.
+
+Both modes go through the exact same
+`RiskExplainer.score_transaction` → `decide_action` →
+`_generate_explanation` → review-queue pipeline and render in the same
+results panel: the automated decision (action + escalation flag)
+appears instantly; the "AI Reviewer Explanation" panel below it fills
+in a moment later once the background LLM call finishes — that gap is
+intentional, not a loading bug (see point 4 above).
 
 **Cost-Optimal Threshold tab:** shows the eval report and lets you
 adjust the fraud-loss/false-positive-cost assumptions to see how the

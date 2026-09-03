@@ -139,6 +139,26 @@ export interface ConsistencyAnalysisResult {
   message: string | null;
 }
 
+// Fields a person could reasonably fill in by hand for a transaction
+// that doesn't exist in the cached historical sample — everything else
+// the model expects (C1-C14, D-features, V-features, M-features,
+// entity_prior_* features, ...) is left missing and handled by the
+// backend exactly like RiskExplainer.score_transaction already handles
+// any missing feature. TransactionAmt is the only required field.
+export interface CustomTransactionRequest {
+  TransactionAmt: number;
+  ProductCD?: string;
+  card4?: string;
+  card6?: string;
+  P_emaildomain?: string;
+  R_emaildomain?: string;
+  DeviceType?: string;
+  addr1?: number;
+  addr2?: number;
+  hour_of_day?: number;
+  attach_to_entity_id?: string | null;
+}
+
 export interface ReviewQueueMetrics {
   total_disposed: number;
   overall_precision: number | null;
@@ -194,6 +214,11 @@ export const api = {
       method: "POST",
       headers: { "Idempotency-Key": idempotencyKey },
       body: JSON.stringify({ entity_id: entityId, txn_index: txnIndex }),
+    }),
+  scoreCustom: (req: CustomTransactionRequest) =>
+    request<ScoreResult>("/score-custom", {
+      method: "POST",
+      body: JSON.stringify(req),
     }),
   getExplanation: (verdictId: string) =>
     request<ExplanationResult>(`/explanations/${encodeURIComponent(verdictId)}`),
