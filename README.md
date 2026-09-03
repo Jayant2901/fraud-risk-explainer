@@ -250,7 +250,16 @@ the FastAPI backend.
 - *Replay historical* — pick one of the ~30 cached entities, walk
   through its transactions in sequence, and watch the escalation state
   build up as verdicts accumulate. This is the part to demo live, since
-  it's the piece a static classifier genuinely can't do.
+  it's the piece a static classifier genuinely can't do. Click **Play**
+  to step through the entity's whole transaction sequence automatically
+  (1x/2x/4x speed) instead of clicking "Score this transaction"
+  repeatedly — useful for letting escalation build up on screen without
+  narrating each click. The interval is capped so no speed setting can
+  exceed the live `/api/score` rate limit (30/minute): the 1x/2x
+  intervals (6s/3s) sit comfortably under it, and 4x is clamped up to a
+  2.1s floor rather than actually running at the naive 1.5s that speed
+  would otherwise imply. Manual stepping (the slider and the score
+  button) keeps working exactly as before; Play just automates it.
 - *Score custom* — construct a transaction from scratch (amount,
   product code, card network/type, email domains, device type, billing
   region/country, hour of day) that isn't in the historical sample at

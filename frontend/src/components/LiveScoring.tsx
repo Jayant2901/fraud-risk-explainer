@@ -24,6 +24,21 @@ function riskBand(score: number) {
 }
 
 type Mode = "replay" | "custom";
+type PlaySpeed = 1 | 2 | 4;
+
+// The 1x base interval and the hard floor below are both chosen so that
+// NO speed setting can sustain a rate above the live /api/score limit
+// (30/minute = one call per 2000ms): 1x/2x land comfortably under it,
+// and 4x (6000/4 = 1500ms) gets clamped up to the floor rather than
+// actually firing at 1500ms. This deliberately overrides this phase's
+// "start at ~1.5s" suggestion, which — sustained — would itself exceed
+// the limit (40 calls/minute); the "never exceed 30/minute" rule wins.
+const PLAY_BASE_INTERVAL_MS = 6000;
+const PLAY_MIN_INTERVAL_MS = 2100;
+
+function playIntervalMs(speed: PlaySpeed): number {
+  return Math.max(PLAY_MIN_INTERVAL_MS, PLAY_BASE_INTERVAL_MS / speed);
+}
 
 // A plausible legitimate-looking transaction, pre-filled so the custom
 // form is immediately submittable rather than starting blank.
@@ -55,6 +70,8 @@ export default function LiveScoring() {
   const [error, setError] = useState<string | null>(null);
   const [customForm, setCustomForm] = useState(DEFAULT_CUSTOM_FORM);
   const [customAttachEntityId, setCustomAttachEntityId] = useState<string>("");
+  const [playing, setPlaying] = useState(false);
+  const [playSpeed, setPlaySpeed] = useState<PlaySpeed>(1);
 
   useEffect(() => {
     api
@@ -69,6 +86,7 @@ export default function LiveScoring() {
 
   useEffect(() => {
     if (!selectedEntity) return;
+    setPlaying(false);
     setLoadingTxns(true);
     setResult(null);
     setTxnIdx(0);
@@ -117,6 +135,7 @@ export default function LiveScoring() {
 
   async function handleReset() {
     if (!selectedEntity) return;
+    setPlaying(false);
     await api.resetEntity(selectedEntity);
     const esc = await api.getEscalation(selectedEntity);
     setEscalation(esc);
@@ -139,6 +158,32 @@ export default function LiveScoring() {
       setScoring(false);
     }
   }
+
+  // "Replay at speed" demo mode: while playing, scores the current
+  // transaction, then advances to the next one after a delay, until the
+  // entity's transaction list is exhausted or the user pauses. Each tick
+  // is a fresh setTimeout keyed on txnIdx (rather than one long-lived
+  // setInterval) so its closure always sees the current txnIdx/entity,
+  // and pausing/unmounting/switching entities cleanly cancels the
+  // pending tick via the effect's own cleanup — no leaked timers.
+  useEffect(() => {
+    if (!playing || !txns.length) return;
+    if (txnIdx >= txns.length) {
+      setPlaying(false);
+      return;
+    }
+    const timer = setTimeout(() => {
+      void (async () => {
+        await handleScore();
+        setTxnIdx((i) => {
+          const next = i + 1;
+          if (next >= txns.length) setPlaying(false);
+          return next;
+        });
+      })();
+    }, playIntervalMs(playSpeed));
+    return () => clearTimeout(timer);
+  }, [playing, txnIdx, playSpeed, txns.length, selectedEntity]);
 
   async function handleScoreCustom() {
     setScoring(true);
@@ -250,6 +295,30 @@ export default function LiveScoring() {
               )}
             </div>
 
+            <div className="flex items-center gap-2">
+              <button
+                onClick={() => setPlaying((p) => !p)}
+                disabled={!txns.length}
+                className={`text-sm font-medium px-3 py-1.5 rounded-md border border-app-accent text-app-accent-soft bg-transparent hover:bg-app-accent/10 disabled:opacity-50 ${buttonLabel} ${buttonBase}`}
+              >
+                {playing ? "Pause" : "Play"}
+              </button>
+              <label htmlFor="play-speed" className="sr-only">
+                Playback speed
+              </label>
+              <select
+                id="play-speed"
+                value={playSpeed}
+                onChange={(e) => setPlaySpeed(Number(e.target.value) as PlaySpeed)}
+                className={`bg-app-surface border border-app-rule rounded-md px-2 py-1.5 text-xs text-app-ink ${focusRing}`}
+              >
+                <option value={1}>1x</option>
+                <option value={2}>2x</option>
+                <option value={4}>4x</option>
+              </select>
+              <p className={typeScale.caption}>steps automatically through the sequence</p>
+            </div>
+
             <button
               onClick={handleReset}
               className={`w-full text-sm px-3 py-1.5 rounded-md border border-transparent text-app-muted hover:bg-app-ink/5 ${buttonLabel} ${buttonBase}`}
@@ -259,7 +328,7 @@ export default function LiveScoring() {
 
             <button
               onClick={handleScore}
-              disabled={!txns.length || scoring}
+              disabled={!txns.length || scoring || playing}
               className={`w-full text-sm font-medium px-3 py-2 rounded-md border border-app-accent text-app-accent-soft bg-transparent hover:bg-app-accent/10 ${buttonLabel} ${buttonBase}`}
             >
               {scoring ? "Scoring..." : "Score this transaction"}
