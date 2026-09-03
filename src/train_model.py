@@ -23,7 +23,15 @@ Outputs:
                                          See BLOCK_FP_COST_MULTIPLIER below
                                          for exactly how "block" is derived.
     models/eval_report.txt            - AUC/PR-AUC + cost-based analysis
+    models/cost_summary.json          - {"estimated_savings", "estimated_savings_pct",
+                                         "n_test_transactions"} from the cost-optimal
+                                         threshold analysis above, in structured form —
+                                         feeds GET /api/cost-analysis's headline_monthly_
+                                         savings_estimate (see src/impact_summary.py),
+                                         since eval_report.txt itself is unstructured text.
 """
+import json
+
 import joblib
 import numpy as np
 from xgboost import XGBClassifier
@@ -38,6 +46,7 @@ THRESHOLD_PATH = "models/optimal_threshold.joblib"
 CATEGORIES_PATH = "models/categorical_categories.joblib"
 REPORT_PATH = "models/eval_report.txt"
 DECISION_THRESHOLDS_PATH = "models/decision_thresholds.joblib"
+COST_SUMMARY_PATH = "models/cost_summary.json"
 
 # The REVIEW threshold is just optimal_threshold()'s result under the
 # default cost assumptions — the point where flagging first becomes
@@ -163,12 +172,19 @@ def train(df=None):
     joblib.dump(optimal_t, THRESHOLD_PATH)
     joblib.dump(categories_map, CATEGORIES_PATH)
     joblib.dump(decision_thresholds, DECISION_THRESHOLDS_PATH)
+    with open(COST_SUMMARY_PATH, "w") as f:
+        json.dump({
+            "estimated_savings": cost_result["estimated_savings"],
+            "estimated_savings_pct": cost_result["estimated_savings_pct"],
+            "n_test_transactions": len(y_test),
+        }, f, indent=2)
     print(f"\nSaved model -> {MODEL_PATH}")
     print(f"Saved feature list -> {FEATURES_PATH}")
     print(f"Saved cost-optimal threshold -> {THRESHOLD_PATH}")
     print(f"Saved categorical category sets -> {CATEGORIES_PATH}")
     print(f"Saved live decision thresholds -> {DECISION_THRESHOLDS_PATH}")
     print(f"Saved eval report -> {REPORT_PATH}")
+    print(f"Saved cost summary -> {COST_SUMMARY_PATH}")
 
 
 if __name__ == "__main__":

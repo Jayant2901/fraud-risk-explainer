@@ -55,9 +55,10 @@ from risk_explainer import RiskExplainer
 from llm_agent import RiskExplainerAgent
 from entity_memory import create_entity_memory, _compute_escalation_state
 from redis_utils import get_redis_client, KeyedCache
-from review_queue import create_review_queue, UnknownVerdictError, AlreadyDisposedError
+from review_queue import create_review_queue, UnknownVerdictError, AlreadyDisposedError, NOTE_MAX_LEN, _now_iso
 from data_utils import load_raw_data, engineer_features
 from cost_analysis import cost_curve, DEFAULT_AVG_FRAUD_LOSS, DEFAULT_AVG_FP_COST
+from impact_summary import extrapolate_monthly_savings
 
 configure_logging()
 logger = logging.getLogger(__name__)
@@ -141,6 +142,8 @@ ESCALATION_ABLATION_REPORT_PATH = "models/escalation_ablation_report.txt"
 COST_SENSITIVITY_REPORT_PATH = "models/cost_sensitivity_report.json"
 DRIFT_REPORT_PATH = "models/drift_report.json"
 CONSISTENCY_REPORT_PATH = "models/consistency_report.json"
+COLD_START_REPORT_PATH = "models/cold_start_report.txt"
+COST_SUMMARY_PATH = "models/cost_summary.json"
 
 # --- Singletons (model, explainer, agent, entity memory) ---------------
 # REDIS_URL is read once here, at process startup — same as any other
@@ -285,6 +288,11 @@ class DispositionRequest(BaseModel):
     disposition: Literal["CONFIRMED_FRAUD", "FALSE_POSITIVE"]
 
 
+class AddNoteRequest(BaseModel):
+    author: str = Field(default="Reviewer", max_length=100)
+    text: str = Field(min_length=1, max_length=NOTE_MAX_LEN)
+
+
 @router.get("/api/entities")
 def list_entities():
     samples = get_sample_data()
@@ -382,6 +390,8 @@ def score(
             "escalated_due_to_history": decision["escalated_due_to_history"],
             "disposition": None,
             "disposed_at": None,
+            "created_at": _now_iso(),
+            "notes": [],
         })
 
     response = {
@@ -444,6 +454,8 @@ def score_custom(
             "escalated_due_to_history": decision["escalated_due_to_history"],
             "disposition": None,
             "disposed_at": None,
+            "created_at": _now_iso(),
+            "notes": [],
         })
 
     return {
@@ -486,6 +498,22 @@ def get_review_queue_metrics():
     return _review_queue.metrics()
 
 
+@router.post("/api/review-queue/{verdict_id}/notes")
+def add_review_note(verdict_id: str, req: AddNoteRequest):
+    try:
+        return _review_queue.add_note(verdict_id, req.author, req.text)
+    except UnknownVerdictError:
+        raise HTTPException(status_code=404, detail="Unknown verdict_id")
+
+
+@router.get("/api/review-queue/{verdict_id}/related")
+def get_related_review_items(verdict_id: str):
+    try:
+        return {"items": _review_queue.related(verdict_id)}
+    except UnknownVerdictError:
+        raise HTTPException(status_code=404, detail="Unknown verdict_id")
+
+
 @router.get("/api/cost-analysis")
 def get_cost_analysis(
     fraud_loss: float = DEFAULT_AVG_FRAUD_LOSS,
@@ -496,6 +524,20 @@ def get_cost_analysis(
         with open(EVAL_REPORT_PATH) as f:
             eval_report = f.read()
 
+    # Phase H's headline number — a linear extrapolation of the real,
+    # measured cost-optimal-threshold savings to an assumed monthly
+    # volume (see src/impact_summary.py). Only computable once
+    # train_model.py has produced models/cost_summary.json; None (with
+    # no basis) otherwise, same "generate one first" pattern as every
+    # other report field on this endpoint.
+    headline = None
+    if os.path.exists(COST_SUMMARY_PATH):
+        with open(COST_SUMMARY_PATH) as f:
+            cost_summary = json.load(f)
+        headline = extrapolate_monthly_savings(
+            cost_summary["estimated_savings"], cost_summary["n_test_transactions"]
+        )
+
     return {
         "eval_report": eval_report,
         "defaults": {
@@ -503,6 +545,8 @@ def get_cost_analysis(
             "avg_fp_cost": DEFAULT_AVG_FP_COST,
         },
         "params": {"fraud_loss": fraud_loss, "fp_cost": fp_cost},
+        "headline_monthly_savings_estimate": headline["headline_monthly_savings_estimate"] if headline else None,
+        "headline_basis": headline["basis"] if headline else None,
     }
 
 
@@ -548,6 +592,17 @@ def get_consistency_analysis():
         }
     with open(CONSISTENCY_REPORT_PATH, encoding="utf-8") as f:
         return {"consistency": json.load(f), "message": None}
+
+
+@router.get("/api/cold-start-analysis")
+def get_cold_start_analysis():
+    if not os.path.exists(COLD_START_REPORT_PATH):
+        return {
+            "report": None,
+            "message": "No cold-start report yet — run `python src/graph_features_ablation.py` to generate one.",
+        }
+    with open(COLD_START_REPORT_PATH, encoding="utf-8") as f:
+        return {"report": f.read(), "message": None}
 
 
 @app.get("/api/health")

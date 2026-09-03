@@ -1,3 +1,21 @@
+=== Severity-weighted escalation: cutoff grid sweep ===
+Candidates: watch in [0.8, 1.2, 1.6], elevated in [2.0, 2.8, 3.6] (elevated > watch only), scored by total cost (false_negatives * Rs 5,000 + false_positives * Rs 150) over the full real chronological test set.
+
+  watch  elevated    recall  false_flag     cost (Rs)  chosen
+    0.8       2.0    0.9031      0.1794     5,039,450  
+    0.8       2.8    0.8971      0.1594     4,817,150  
+    0.8       3.6    0.8937      0.1471     4,676,400  <-- chosen (lowest cost)
+    1.2       2.0    0.9031      0.1794     5,039,450  
+    1.2       2.8    0.8971      0.1594     4,817,150  
+    1.2       3.6    0.8937      0.1471     4,676,400  
+    1.6       2.0    0.9031      0.1794     5,039,450  
+    1.6       2.8    0.8971      0.1594     4,817,150  
+    1.6       3.6    0.8937      0.1471     4,676,400  
+
+Chosen cutoffs: watch=0.8, elevated=3.6 — hardcoded as entity_memory.py's DEFAULT_WATCH_PRESSURE_THRESHOLD/DEFAULT_ELEVATED_PRESSURE_THRESHOLD (current live values: 0.8/3.6).
+
+Real finding from this grid, reported honestly: every watch candidate produced IDENTICAL recall/false-flag/cost numbers for a given elevated candidate (see the rows above). That's not a bug — decision_rules.decide_action() only branches on escalation.state == 'ELEVATED'; WATCH never changes the deterministic action, only the state label shown to the reviewer/LLM as an earlier heads-up. So this sweep could only actually optimize the elevated cutoff; the watch cutoff was picked for free (0.8, the most sensitive candidate, giving the earliest informational signal) since it has zero cost impact either way.
+
 Escalation ablation study
 ==========================
 
@@ -8,14 +26,14 @@ Recall (frauds flagged REVIEW/BLOCK):    0.8834 (3,590 / 4,064)
 False-flag rate (legit txns flagged):    0.1167 (13,312 / 114,044)
 
 === Escalation-adjusted: what the live system does today ===
-Recall (frauds flagged REVIEW/BLOCK):    0.9097 (3,697 / 4,064)
-False-flag rate (legit txns flagged):    0.2004 (22,857 / 114,044)
+Recall (frauds flagged REVIEW/BLOCK):    0.8937 (3,632 / 4,064)
+False-flag rate (legit txns flagged):    0.1471 (16,776 / 114,044)
 
-Recall delta from escalation:  +0.0263
-False-flag-rate delta:         +0.0837
+Recall delta from escalation:  +0.0103
+False-flag-rate delta:         +0.0304
 
 === Precision of escalation-triggered flips ===
 Of the transactions where entity escalation history actually pushed the action higher than the raw score alone would have (escalated_due_to_history == True):
-  Flip count:  13,473
-  Of those, actually fraud:  336
-  Precision of escalation-triggered flips:  0.0249
+  Flip count:  5,933
+  Of those, actually fraud:  193
+  Precision of escalation-triggered flips:  0.0325

@@ -41,6 +41,7 @@ Output:
 import sys
 import os
 import json
+import math
 import time
 from collections import Counter
 
@@ -50,7 +51,7 @@ import joblib
 
 from escalation_ablation import load_test_set
 from decision_rules import decide_action, load_decision_thresholds
-from entity_memory import _compute_escalation_state, ELEVATED_THRESHOLD
+from entity_memory import _compute_escalation_state, DEFAULT_ELEVATED_PRESSURE_THRESHOLD, VERDICT_WEIGHT
 from risk_explainer import RiskExplainer
 from llm_agent import RiskExplainerAgent
 
@@ -184,8 +185,18 @@ def elevated_escalation(entity_id: str, risk_score: float) -> dict:
     """A constructed ELEVATED state — exactly the "should history push
     this higher" judgment call the system prompt itself calls out as
     ambiguous, so it's tested deliberately rather than left to chance
-    (most real sampled transactions' actual entities will be NORMAL)."""
-    history = [{"verdict": "BLOCK", "risk_score": risk_score} for _ in range(ELEVATED_THRESHOLD)]
+    (most real sampled transactions' actual entities will be NORMAL).
+
+    Uses BLOCK verdicts at risk_score=100 (max signal) for the
+    synthetic history, not this pair's own (possibly very low) score —
+    with the severity-weighted pressure formula (see entity_memory.py),
+    reusing a low current-transaction score for the history too could
+    fail to reach ELEVATED at all. enough_blocks is computed from the
+    real, grid-chosen ELEVATED cutoff so this stays correct if that
+    cutoff is ever re-tuned."""
+    per_verdict_pressure = VERDICT_WEIGHT["BLOCK"] * 1.0
+    enough_blocks = math.ceil(DEFAULT_ELEVATED_PRESSURE_THRESHOLD / per_verdict_pressure)
+    history = [{"verdict": "BLOCK", "risk_score": 100.0} for _ in range(enough_blocks)]
     return _compute_escalation_state(entity_id, history)
 
 

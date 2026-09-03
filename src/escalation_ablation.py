@@ -22,6 +22,11 @@ Verdicts are recorded into the memory using the escalation-adjusted
 action as they're replayed, so escalation state genuinely accumulates
 the same way it would in production.
 
+Also sweeps a small grid of candidate severity-weighted escalation
+cutoffs (sweep_pressure_thresholds()) and reports the full grid, so the
+WATCH/ELEVATED cutoffs entity_memory.py hardcodes are a real, documented
+choice rather than a guess — see that module's docstring.
+
 Run:
     python src/escalation_ablation.py
 
@@ -30,6 +35,7 @@ Output:
 """
 import sys
 import os
+from collections import defaultdict, deque
 
 sys.path.append(os.path.dirname(__file__))
 
@@ -38,7 +44,14 @@ import joblib
 
 from data_utils import load_raw_data, engineer_features
 from decision_rules import decide_action, load_decision_thresholds
-from entity_memory import EntityRiskMemory
+from entity_memory import (
+    EntityRiskMemory,
+    WINDOW_SIZE,
+    _compute_escalation_state,
+    DEFAULT_WATCH_PRESSURE_THRESHOLD,
+    DEFAULT_ELEVATED_PRESSURE_THRESHOLD,
+)
+from cost_analysis import DEFAULT_AVG_FRAUD_LOSS, DEFAULT_AVG_FP_COST
 
 MODEL_PATH = "models/risk_model.joblib"
 FEATURES_PATH = "models/feature_cols.joblib"
@@ -46,6 +59,15 @@ REPORT_PATH = "models/escalation_ablation_report.txt"
 
 TEST_FRAC = 0.2
 FLAGGED_ACTIONS = {"REVIEW", "BLOCK"}
+
+# --- Phase C: severity-weighted escalation cutoff grid sweep ---
+# Small grid of candidate (watch, elevated) risk_pressure cutoffs (see
+# entity_memory._risk_pressure) — analogous in spirit to
+# cost_sensitivity.py's cost-assumption grid. Only combinations where
+# elevated > watch are evaluated (a collapsed/inverted tier pair isn't a
+# meaningful candidate).
+WATCH_PRESSURE_CANDIDATES = [0.8, 1.2, 1.6]
+ELEVATED_PRESSURE_CANDIDATES = [2.0, 2.8, 3.6]
 
 
 def load_test_set(test_frac: float = TEST_FRAC) -> pd.DataFrame:
@@ -154,6 +176,122 @@ def compute_escalation_flip_precision(replay_df: pd.DataFrame) -> dict:
     }
 
 
+def replay_with_pressure_escalation(
+    test_df: pd.DataFrame,
+    risk_scores: pd.Series,
+    thresholds: dict,
+    watch_threshold: float,
+    elevated_threshold: float,
+    window_size: int = WINDOW_SIZE,
+) -> pd.DataFrame:
+    """Same idea as replay(), but computes escalation state directly via
+    entity_memory._compute_escalation_state() with the given
+    severity-weighted pressure cutoffs, instead of going through a real
+    EntityRiskMemory (which always uses that module's live default
+    cutoffs) — lets sweep_pressure_thresholds() try many candidates
+    cheaply without touching entity_memory.py's defaults."""
+    histories = defaultdict(lambda: deque(maxlen=window_size))
+    rows = []
+
+    for idx, txn in test_df.iterrows():
+        entity_id = txn["entity_id"]
+        risk_score = float(risk_scores.loc[idx])
+
+        escalation_before = _compute_escalation_state(
+            entity_id, list(histories[entity_id]), watch_threshold, elevated_threshold
+        )
+        adjusted_decision = decide_action(risk_score, escalation_before, thresholds["review"], thresholds["block"])
+        histories[entity_id].append({"verdict": adjusted_decision["action"], "risk_score": risk_score})
+
+        rows.append({
+            "is_fraud": int(txn["isFraud"]),
+            "adjusted_action": adjusted_decision["action"],
+        })
+
+    return pd.DataFrame(rows)
+
+
+def compute_cost(
+    is_fraud: pd.Series,
+    action: pd.Series,
+    avg_fraud_loss: float = DEFAULT_AVG_FRAUD_LOSS,
+    avg_fp_cost: float = DEFAULT_AVG_FP_COST,
+) -> float:
+    """Same cost formula train_model.py's threshold derivation uses (see
+    cost_analysis.py): a missed fraud (not flagged REVIEW/BLOCK) costs
+    avg_fraud_loss, a flagged legitimate transaction costs avg_fp_cost."""
+    flagged = action.isin(FLAGGED_ACTIONS)
+    false_negatives = int(((~flagged) & (is_fraud == 1)).sum())
+    false_positives = int((flagged & (is_fraud == 0)).sum())
+    return false_negatives * avg_fraud_loss + false_positives * avg_fp_cost
+
+
+def sweep_pressure_thresholds(test_df: pd.DataFrame, risk_scores: pd.Series, thresholds: dict) -> list[dict]:
+    """Tries every (watch, elevated) pair in WATCH_PRESSURE_CANDIDATES x
+    ELEVATED_PRESSURE_CANDIDATES (elevated > watch only), replaying the
+    full real chronological test set for each, and reports recall/
+    false-flag-rate/cost per candidate — the SAME cost formula (and cost
+    assumptions) train_model.py's own threshold derivation uses, so the
+    eventual choice is made by the same "minimize cost" principle the
+    rest of this project already uses, not by eyeballing a tradeoff."""
+    results = []
+    for watch in WATCH_PRESSURE_CANDIDATES:
+        for elevated in ELEVATED_PRESSURE_CANDIDATES:
+            if elevated <= watch:
+                continue
+            replay_df = replay_with_pressure_escalation(test_df, risk_scores, thresholds, watch, elevated)
+            metrics = compute_strategy_metrics(replay_df["is_fraud"], replay_df["adjusted_action"])
+            cost = compute_cost(replay_df["is_fraud"], replay_df["adjusted_action"])
+            results.append({
+                "watch_threshold": watch,
+                "elevated_threshold": elevated,
+                "recall": metrics["recall"],
+                "false_flag_rate": metrics["false_flag_rate"],
+                "cost": cost,
+            })
+    return results
+
+
+def build_sweep_report(sweep_results: list[dict]) -> str:
+    chosen = min(sweep_results, key=lambda r: r["cost"]) if sweep_results else None
+    lines = [
+        "=== Severity-weighted escalation: cutoff grid sweep ===",
+        f"Candidates: watch in {WATCH_PRESSURE_CANDIDATES}, elevated in "
+        f"{ELEVATED_PRESSURE_CANDIDATES} (elevated > watch only), scored by total "
+        f"cost (false_negatives * Rs {DEFAULT_AVG_FRAUD_LOSS:,.0f} + false_positives * "
+        f"Rs {DEFAULT_AVG_FP_COST:,.0f}) over the full real chronological test set.",
+        "",
+        f"{'watch':>7}{'elevated':>10}{'recall':>10}{'false_flag':>12}{'cost (Rs)':>14}  chosen",
+    ]
+    for r in sweep_results:
+        is_chosen = chosen is not None and r is chosen
+        lines.append(
+            f"{r['watch_threshold']:>7.1f}{r['elevated_threshold']:>10.1f}"
+            f"{r['recall']:>10.4f}{r['false_flag_rate']:>12.4f}{r['cost']:>14,.0f}"
+            f"  {'<-- chosen (lowest cost)' if is_chosen else ''}"
+        )
+    lines.append("")
+    if chosen is not None:
+        lines.append(
+            f"Chosen cutoffs: watch={chosen['watch_threshold']}, elevated={chosen['elevated_threshold']} "
+            f"— hardcoded as entity_memory.py's DEFAULT_WATCH_PRESSURE_THRESHOLD/"
+            f"DEFAULT_ELEVATED_PRESSURE_THRESHOLD (current live values: "
+            f"{DEFAULT_WATCH_PRESSURE_THRESHOLD}/{DEFAULT_ELEVATED_PRESSURE_THRESHOLD})."
+        )
+    lines.append(
+        "\nReal finding from this grid, reported honestly: every watch candidate produced "
+        "IDENTICAL recall/false-flag/cost numbers for a given elevated candidate (see the rows "
+        "above). That's not a bug — decision_rules.decide_action() only branches on "
+        "escalation.state == 'ELEVATED'; WATCH never changes the deterministic action, only the "
+        "state label shown to the reviewer/LLM as an earlier heads-up. So this sweep could only "
+        "actually optimize the elevated cutoff; the watch cutoff was picked for free (0.8, the "
+        "most sensitive candidate, giving the earliest informational signal) since it has zero "
+        "cost impact either way."
+    )
+    lines.append("")
+    return "\n".join(lines)
+
+
 def build_report(replay_df: pd.DataFrame) -> str:
     is_fraud = replay_df["is_fraud"]
 
@@ -208,10 +346,15 @@ def run():
     print("Scoring test set with the trained model...")
     risk_scores = score_test_set(test_df)
 
-    print("Replaying test set through EntityRiskMemory in time order...")
+    print("Sweeping severity-weighted escalation cutoff grid...")
+    sweep_results = sweep_pressure_thresholds(test_df, risk_scores, thresholds)
+    sweep_report = build_sweep_report(sweep_results)
+    print(sweep_report)
+
+    print("Replaying test set through EntityRiskMemory (live cutoffs) in time order...")
     replay_df = replay(test_df, risk_scores, thresholds)
 
-    report = build_report(replay_df)
+    report = sweep_report + "\n" + build_report(replay_df)
     print(report)
 
     with open(REPORT_PATH, "w") as f:

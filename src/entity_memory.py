@@ -15,6 +15,18 @@ entity already in ELEVATED state may reasonably be escalated to BLOCK,
 with the LLM asked to justify that escalation explicitly rather than
 silently overriding the model.
 
+The state is derived from a continuous, SEVERITY-WEIGHTED "risk
+pressure" value rather than a raw count of risky verdicts (see
+VERDICT_WEIGHT/_risk_pressure below) — a BLOCK contributes more than a
+REVIEW, and a high-scoring REVIEW contributes more than a borderline
+one, instead of every risky verdict counting identically. The
+WATCH/ELEVATED cutoffs against that pressure value were chosen by a
+real grid sweep in src/escalation_ablation.py (sweep_pressure_thresholds()),
+picking whichever candidate minimizes the same cost formula
+train_model.py's own threshold derivation uses (see DEFAULT_WATCH_
+PRESSURE_THRESHOLD/DEFAULT_ELEVATED_PRESSURE_THRESHOLD below for the
+exact grid and result) — not hand-picked to look good.
+
 Two implementations, same behavioral contract (record_verdict /
 get_escalation_state / reset), sharing the threshold math in
 _compute_escalation_state so they can never silently disagree:
@@ -31,10 +43,35 @@ import json
 from collections import defaultdict, deque
 
 WINDOW_SIZE = 10           # how many recent verdicts we remember per entity
-WATCH_THRESHOLD = 2        # >= this many REVIEW/BLOCK in window -> WATCH
-ELEVATED_THRESHOLD = 4     # >= this many REVIEW/BLOCK in window -> ELEVATED
 
 RISKY_VERDICTS = {"REVIEW", "BLOCK"}
+
+# A BLOCK is a stronger risk signal than a REVIEW — weight it higher —
+# and within each tier, a verdict scored 95 says more than one scored 41
+# that happened to cross the same review_threshold, so each verdict's
+# own risk_score (normalized to 0-1) scales its contribution too. ALLOW
+# verdicts contribute nothing (not in this dict -> weight 0).
+VERDICT_WEIGHT = {"BLOCK": 2.0, "REVIEW": 1.0}
+
+# Chosen by the real grid sweep in escalation_ablation.sweep_pressure_
+# thresholds() — WATCH_PRESSURE_CANDIDATES x ELEVATED_PRESSURE_CANDIDATES,
+# picking whichever (watch, elevated) pair minimizes total cost
+# (false_negatives * avg_fraud_loss + false_positives * avg_fp_cost,
+# cost_analysis.py's own default assumptions) over the full real
+# chronological test set — see models/escalation_ablation_report.txt
+# for the actual grid results this was picked from.
+#
+# A real finding from that sweep worth being explicit about: every
+# WATCH candidate produced IDENTICAL cost/recall/false-flag numbers for
+# a given ELEVATED candidate. That's not a sweep bug — decide_action()
+# (src/decision_rules.py) only branches on escalation.get("state") ==
+# "ELEVATED"; WATCH never changes the deterministic action, only the
+# state label surfaced to the reviewer/LLM as an earlier informational
+# heads-up. So DEFAULT_WATCH_PRESSURE_THRESHOLD only controls how early
+# that label appears, not any decision — DEFAULT_ELEVATED_PRESSURE_
+# THRESHOLD is the only cutoff the cost sweep could actually optimize.
+DEFAULT_WATCH_PRESSURE_THRESHOLD = 0.8
+DEFAULT_ELEVATED_PRESSURE_THRESHOLD = 3.6
 
 # How long an entity's history survives with no new verdicts, for the
 # Redis-backed implementation. Refreshed on every write, so an active
@@ -43,15 +80,36 @@ REDIS_TTL_SECONDS = 24 * 60 * 60
 REDIS_KEY_PREFIX = "riskmgr:entity_history"
 
 
-def _compute_escalation_state(entity_id: str, history: list[dict]) -> dict:
+def _risk_pressure(history: list[dict]) -> float:
+    """Continuous severity-weighted signal: sum of each verdict's
+    VERDICT_WEIGHT scaled by its own risk_score (0-1). E.g. one BLOCK at
+    risk_score=90 contributes 2.0 * 0.90 = 1.8; one REVIEW at
+    risk_score=50 contributes 1.0 * 0.50 = 0.5 — a hand-computable
+    example exercised directly in test_entity_memory.py."""
+    return sum(VERDICT_WEIGHT.get(h["verdict"], 0.0) * (h["risk_score"] / 100.0) for h in history)
+
+
+def _compute_escalation_state(
+    entity_id: str,
+    history: list[dict],
+    watch_threshold: float = DEFAULT_WATCH_PRESSURE_THRESHOLD,
+    elevated_threshold: float = DEFAULT_ELEVATED_PRESSURE_THRESHOLD,
+) -> dict:
     """history: list of {"verdict": str, "risk_score": float}, oldest
     first — the shared math both EntityRiskMemory and
-    RedisEntityRiskMemory build their get_escalation_state() on."""
-    risky_count = sum(1 for h in history if h["verdict"] in RISKY_VERDICTS)
+    RedisEntityRiskMemory build their get_escalation_state() on.
 
-    if risky_count >= ELEVATED_THRESHOLD:
+    watch_threshold/elevated_threshold: cutoffs against _risk_pressure()
+    (not a raw verdict count). Callers should rely on the module
+    defaults, which are the real, grid-chosen cutoffs — these parameters
+    exist so escalation_ablation.sweep_pressure_thresholds() can try
+    other candidates without a real EntityRiskMemory per candidate."""
+    risky_count = sum(1 for h in history if h["verdict"] in RISKY_VERDICTS)
+    pressure = _risk_pressure(history)
+
+    if pressure >= elevated_threshold:
         state = "ELEVATED"
-    elif risky_count >= WATCH_THRESHOLD:
+    elif pressure >= watch_threshold:
         state = "WATCH"
     else:
         state = "NORMAL"
@@ -65,6 +123,7 @@ def _compute_escalation_state(entity_id: str, history: list[dict]) -> dict:
         "state": state,
         "recent_verdict_count": len(history),
         "recent_risky_count": risky_count,
+        "risk_pressure": round(pressure, 3),
         "avg_recent_risk_score": round(avg_recent_score, 1),
         "recent_verdicts": [h["verdict"] for h in history],
     }

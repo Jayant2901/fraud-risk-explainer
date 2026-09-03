@@ -19,6 +19,8 @@ function mockCostAnalysisResponse() {
     eval_report: null,
     defaults: { avg_fraud_loss: 5000, avg_fp_cost: 150 },
     params: { fraud_loss: 5000, fp_cost: 150 },
+    headline_monthly_savings_estimate: null,
+    headline_basis: null,
   });
   mockedApi.costSensitivity.mockResolvedValue({
     sensitivity: null,
@@ -75,6 +77,8 @@ describe("CostAnalysis", () => {
       eval_report: "ROC-AUC: 0.95",
       defaults: { avg_fraud_loss: 5000, avg_fp_cost: 150 },
       params: { fraud_loss: 5000, fp_cost: 150 },
+      headline_monthly_savings_estimate: null,
+      headline_basis: null,
     });
     mockedApi.costSensitivity.mockResolvedValue({ sensitivity: null, message: null });
     mockedApi.driftAnalysis.mockResolvedValue({ drift: null, message: null });

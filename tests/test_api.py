@@ -376,6 +376,111 @@ class TestReviewQueue:
         r = client.get("/api/review-queue?status=disposed", headers=auth_headers)
         assert r.status_code == 400
 
+    def test_new_items_carry_a_created_at_timestamp_and_empty_notes(self, client, auth_headers):
+        score_resp = client.post(
+            "/api/score", json={"entity_id": "entity-a", "txn_index": 0}, headers=auth_headers
+        )
+        verdict_id = score_resp.json()["verdict_id"]
+
+        items = client.get("/api/review-queue?status=pending", headers=auth_headers).json()["items"]
+        item = next(i for i in items if i["verdict_id"] == verdict_id)
+        assert item["created_at"] is not None
+        assert item["notes"] == []
+
+
+class TestReviewQueueNotes:
+    def test_adding_a_note_returns_it_and_it_appears_on_the_item(self, client, auth_headers):
+        score_resp = client.post(
+            "/api/score", json={"entity_id": "entity-a", "txn_index": 0}, headers=auth_headers
+        )
+        verdict_id = score_resp.json()["verdict_id"]
+
+        r = client.post(
+            f"/api/review-queue/{verdict_id}/notes",
+            json={"author": "Alice", "text": "Looks like a stolen card."},
+            headers=auth_headers,
+        )
+        assert r.status_code == 200
+        assert r.json()["author"] == "Alice"
+        assert r.json()["text"] == "Looks like a stolen card."
+
+        items = client.get("/api/review-queue?status=pending", headers=auth_headers).json()["items"]
+        item = next(i for i in items if i["verdict_id"] == verdict_id)
+        assert item["notes"] == [r.json()]
+
+    def test_author_defaults_to_reviewer_when_omitted(self, client, auth_headers):
+        score_resp = client.post(
+            "/api/score", json={"entity_id": "entity-a", "txn_index": 0}, headers=auth_headers
+        )
+        verdict_id = score_resp.json()["verdict_id"]
+
+        r = client.post(
+            f"/api/review-queue/{verdict_id}/notes", json={"text": "note text"}, headers=auth_headers
+        )
+        assert r.status_code == 200
+        assert r.json()["author"] == "Reviewer"
+
+    def test_unknown_verdict_id_returns_404(self, client, auth_headers):
+        r = client.post(
+            "/api/review-queue/does-not-exist/notes",
+            json={"text": "note text"},
+            headers=auth_headers,
+        )
+        assert r.status_code == 404
+
+    def test_empty_text_is_rejected(self, client, auth_headers):
+        score_resp = client.post(
+            "/api/score", json={"entity_id": "entity-a", "txn_index": 0}, headers=auth_headers
+        )
+        verdict_id = score_resp.json()["verdict_id"]
+
+        r = client.post(
+            f"/api/review-queue/{verdict_id}/notes", json={"text": ""}, headers=auth_headers
+        )
+        assert r.status_code == 422
+
+    def test_overlong_text_is_rejected(self, client, auth_headers):
+        score_resp = client.post(
+            "/api/score", json={"entity_id": "entity-a", "txn_index": 0}, headers=auth_headers
+        )
+        verdict_id = score_resp.json()["verdict_id"]
+
+        r = client.post(
+            f"/api/review-queue/{verdict_id}/notes",
+            json={"text": "x" * 2001},
+            headers=auth_headers,
+        )
+        assert r.status_code == 422
+
+
+class TestReviewQueueRelated:
+    def test_unknown_verdict_id_returns_404(self, client, auth_headers):
+        r = client.get("/api/review-queue/does-not-exist/related", headers=auth_headers)
+        assert r.status_code == 404
+
+    def test_no_related_items_returns_empty_list(self, client, auth_headers):
+        score_resp = client.post(
+            "/api/score", json={"entity_id": "entity-a", "txn_index": 0}, headers=auth_headers
+        )
+        verdict_id = score_resp.json()["verdict_id"]
+
+        r = client.get(f"/api/review-queue/{verdict_id}/related", headers=auth_headers)
+        assert r.status_code == 200
+        assert r.json()["items"] == []
+
+    def test_only_same_entity_items_are_related(self, client, auth_headers):
+        r1 = client.post("/api/score", json={"entity_id": "entity-a", "txn_index": 0}, headers=auth_headers)
+        r2 = client.post("/api/score", json={"entity_id": "entity-a", "txn_index": 1}, headers=auth_headers)
+        r3 = client.post("/api/score", json={"entity_id": "entity-b", "txn_index": 0}, headers=auth_headers)
+
+        related = client.get(
+            f"/api/review-queue/{r1.json()['verdict_id']}/related", headers=auth_headers
+        ).json()["items"]
+        related_ids = {i["verdict_id"] for i in related}
+        assert r2.json()["verdict_id"] in related_ids
+        assert r3.json()["verdict_id"] not in related_ids
+        assert r1.json()["verdict_id"] not in related_ids
+
 
 class TestScoreCustom:
     """POST /api/score-custom — scoring a transaction that isn't one of
@@ -499,3 +604,65 @@ class TestCostAnalysis:
     def test_custom_params_are_echoed_back(self, client, auth_headers):
         r = client.get("/api/cost-analysis?fraud_loss=1000&fp_cost=50", headers=auth_headers)
         assert r.json()["params"] == {"fraud_loss": 1000.0, "fp_cost": 50.0}
+
+    def test_headline_is_null_when_no_cost_summary_exists_yet(self, client, auth_headers, monkeypatch, tmp_path):
+        import api.main as main
+
+        monkeypatch.setattr(main, "COST_SUMMARY_PATH", str(tmp_path / "does-not-exist.json"))
+
+        r = client.get("/api/cost-analysis", headers=auth_headers)
+        body = r.json()
+        assert body["headline_monthly_savings_estimate"] is None
+        assert body["headline_basis"] is None
+
+    def test_headline_is_computed_from_a_real_cost_summary_file(self, client, auth_headers, monkeypatch, tmp_path):
+        import api.main as main
+        import json
+
+        summary_path = tmp_path / "cost_summary.json"
+        summary_path.write_text(json.dumps({
+            "estimated_savings": 1000.0,
+            "estimated_savings_pct": 8.8,
+            "n_test_transactions": 1000,
+        }))
+        monkeypatch.setattr(main, "COST_SUMMARY_PATH", str(summary_path))
+
+        r = client.get("/api/cost-analysis", headers=auth_headers)
+        body = r.json()
+        # Rs 1,000 / 1,000 txns = Rs 1/txn * 500,000 assumed monthly volume
+        assert body["headline_monthly_savings_estimate"] == 500_000.0
+        assert "illustrative" in body["headline_basis"].lower()
+
+
+class TestColdStartAnalysis:
+    """Same file-read-or-fallback-message pattern as the other offline
+    report endpoints (get_cost_sensitivity, get_escalation_ablation,
+    get_drift_analysis, get_consistency_analysis) in api/main.py."""
+
+    def test_returns_a_helpful_message_when_no_report_exists_yet(self, client, auth_headers, monkeypatch, tmp_path):
+        import api.main as main
+
+        monkeypatch.setattr(main, "COLD_START_REPORT_PATH", str(tmp_path / "does-not-exist.txt"))
+
+        r = client.get("/api/cold-start-analysis", headers=auth_headers)
+        assert r.status_code == 200
+        body = r.json()
+        assert body["report"] is None
+        assert "graph_features_ablation.py" in body["message"]
+
+    def test_returns_the_real_report_content_when_present(self, client, auth_headers, monkeypatch, tmp_path):
+        import api.main as main
+
+        report_path = tmp_path / "cold_start_report.txt"
+        report_path.write_text("Cold-start ablation report\n===========================\n")
+        monkeypatch.setattr(main, "COLD_START_REPORT_PATH", str(report_path))
+
+        r = client.get("/api/cold-start-analysis", headers=auth_headers)
+        assert r.status_code == 200
+        body = r.json()
+        assert body["message"] is None
+        assert "Cold-start ablation report" in body["report"]
+
+    def test_requires_api_key(self, client):
+        r = client.get("/api/cold-start-analysis")
+        assert r.status_code == 401

@@ -1,27 +1,24 @@
 import { useState, type ComponentType } from "react";
 import Overview from "./components/Overview";
 import LiveScoring from "./components/LiveScoring";
-import CostAnalysis from "./components/CostAnalysis";
 import ReviewQueue from "./components/ReviewQueue";
-import ConsistencyAnalysis from "./components/ConsistencyAnalysis";
+import ModelValidation from "./components/ModelValidation";
 import { focusRing, typeScale } from "./theme";
 
-type Tab = "overview" | "live" | "cost" | "review" | "consistency";
+type Tab = "overview" | "live" | "review" | "validation";
 
 const TABS: { id: Tab; label: string }[] = [
   { id: "overview", label: "Overview" },
   { id: "live", label: "Live Scoring" },
   { id: "review", label: "Review Queue" },
-  { id: "cost", label: "Cost-Optimal Threshold" },
-  { id: "consistency", label: "Consistency" },
+  { id: "validation", label: "Model Validation" },
 ];
 
 const TAB_PANELS: Record<Tab, ComponentType> = {
   overview: Overview,
   live: LiveScoring,
   review: ReviewQueue,
-  cost: CostAnalysis,
-  consistency: ConsistencyAnalysis,
+  validation: ModelValidation,
 };
 
 export default function App() {

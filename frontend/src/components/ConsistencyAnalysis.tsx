@@ -55,8 +55,9 @@ export default function ConsistencyAnalysis() {
               {data.part_a_boundary_fragility.n_near_boundary.toLocaleString()} of{" "}
               {data.part_a_boundary_fragility.n_flagged.toLocaleString()} flagged transactions (
               {formatPct(data.part_a_boundary_fragility.fraction_near_boundary)}) sit within ±2
-              points of a decision boundary (40 or 80) — close calls where a couple of points of
-              model noise could have gone the other way.
+              points of a decision boundary (the model's real, cost-derived review/block
+              thresholds — see Cost-Optimal Threshold below) — close calls where a couple of
+              points of model noise could have gone the other way.
             </p>
           </div>
 

@@ -8,20 +8,52 @@ recent risk trajectory to produce a human-readable explanation — with
 the threshold itself chosen to minimize business cost, not just
 maximize accuracy.
 
+## Scope and honest limitations
+
+Read this before the feature list below, not after. This project
+targets the *same class* of problem Razorpay's own engineering posts
+describe — entity-level judgment consistency, escalation under
+uncertainty, cost-based decision thresholds (see [Does this system
+agree with itself?](#does-this-system-agree-with-itself-and-why-this-question-not-another)
+for the specific posts and pain points) — but validates that on a
+public card-transaction dataset (IEEE-CIS), not real Razorpay merchant
+data, because real merchant-review data isn't available outside
+Razorpay. That's a deliberate scoping choice, not a claim that this
+system was tested against, or directly solves, Razorpay's actual
+merchant-review problem as-is. Concretely:
+
+- The live demo scores either a replay of a fixed ~30-entity historical
+  sample or a user-constructed synthetic transaction (see the Live
+  Scoring tab under [5. Launch the frontend](#5-launch-the-frontend))
+  — never a live payment stream.
+- "Entity" here is a synthesized card + address + email fingerprint
+  (see [A note on the dataset and the entity
+  fingerprint](#a-note-on-the-dataset-and-the-entity-fingerprint)
+  below), not a merchant account.
+- The LLM never makes the authorization decision — it only explains
+  one already made deterministically (see point 4 below).
+
 ## Why this is different from a standard fraud classifier
 
 Most fraud-detection submissions stop at: train a classifier, wrap it
 in SHAP, done. This project makes several deliberate additions, each
 solving a real gap in that standard approach:
 
-1. **Entity risk memory (the "agentic" piece).** Transactions aren't
-   scored in isolation. Each card/account fingerprint (`entity_id`) has
-   a rolling verdict history; three or more REVIEW/BLOCK verdicts in
-   its recent window pushes it into a `WATCH` or `ELEVATED` escalation
-   state. The LLM agent is given this state explicitly and can escalate
-   its recommended action beyond what the raw score alone suggests —
-   and must say so, rather than silently overriding the model. See
-   `src/entity_memory.py`.
+1. **Entity risk memory** — the closest thing this system has to
+   "agentic" behavior, though it never acts autonomously: every
+   escalation decision is still a deterministic threshold comparison,
+   fully auditable, never a model call. Transactions aren't scored in
+   isolation. Each card/account fingerprint (`entity_id`) has a rolling
+   verdict history; a severity-weighted "risk pressure" accumulated
+   from that history (a BLOCK counts for more than a REVIEW, and a
+   high-scoring verdict counts for more than a borderline one — see
+   `src/entity_memory.py`) pushes the entity into a `WATCH` or
+   `ELEVATED` state once it crosses a cutoff chosen by a real grid
+   sweep against the cost tradeoff, not guessed (see [Does entity
+   escalation actually help?](#does-entity-escalation-actually-help)).
+   The LLM agent is given this state explicitly and can escalate its
+   recommended action beyond what the raw score alone suggests — and
+   must say so, rather than silently overriding the model.
 
 2. **Cost-optimal threshold, not just AUC — and not just one point
    estimate.** A risk team doesn't optimize accuracy — they minimize
@@ -120,7 +152,13 @@ solving a real gap in that standard approach:
    [Phase 0's escalation-ablation comparison](#does-entity-escalation-actually-help)
    from these *live* dispositions — precision specifically among
    escalation-triggered flags vs. non-escalated ones — instead of only
-   the offline test set.
+   the offline test set. Each item also carries a free-text note thread
+   (`POST /api/review-queue/{verdict_id}/notes`) and a same-entity
+   related-items lookup (`GET /api/review-queue/{verdict_id}/related`)
+   so a reviewer can see prior context for that entity without leaving
+   the queue; pending items show their age since `created_at` with
+   escalating visual urgency in the frontend, so an old, forgotten item
+   doesn't quietly sit unreviewed.
 
 ## A note on the dataset and the entity fingerprint
 
@@ -133,6 +171,18 @@ something invented for this project — it mirrors how real card
 networks do entity resolution (device + card + address fingerprinting)
 when no explicit account ID is available in the event stream. With
 real Razorpay data, you'd use the actual merchant/account ID directly.
+
+To be explicit about what that means for this project's grounding
+(see [Scope and honest limitations](#scope-and-honest-limitations)
+above): this "entity" is a card+address+email fingerprint on
+individual card-not-present transactions, not a Razorpay merchant
+account. The entity-level questions this project asks — does watching
+an entity's recent history help, is the system consistent with
+itself on repeat looks at the same case — are the same *class* of
+question Razorpay's posts raise about merchant review, answered here
+on a public proxy dataset because real merchant-review data isn't
+available, not a claim that this validates against Razorpay's actual
+merchant population or review workflow.
 
 ## Setup
 
@@ -245,6 +295,18 @@ For a production build: `npm run build` (outputs static assets to
 `frontend/dist/`), served by any static host or reverse-proxied behind
 the FastAPI backend.
 
+**Overview tab:** leads with one headline number — a real, computed
+extrapolation of the cost-optimal threshold's measured savings
+(`src/impact_summary.py`) to an assumed monthly transaction volume,
+with the assumption stated directly beneath it, never shown alone. From
+the current real run: **Rs 421,850 saved on the 118,108-transaction
+test set → Rs 17,85,865/month extrapolated at an assumed 500,000
+transactions/month** (`ASSUMED_MONTHLY_TRANSACTION_VOLUME` — an
+illustrative constant for scale, not a real Razorpay volume figure).
+Regenerate it with `python src/train_model.py`, which now also saves
+`models/cost_summary.json`; served via `GET /api/cost-analysis`'s
+`headline_monthly_savings_estimate`/`headline_basis` fields.
+
 **Live Scoring tab:** two modes, toggled at the top of the sidebar.
 
 - *Replay historical* — pick one of the ~30 cached entities, walk
@@ -280,9 +342,15 @@ appears instantly; the "AI Reviewer Explanation" panel below it fills
 in a moment later once the background LLM call finishes — that gap is
 intentional, not a loading bug (see point 4 above).
 
-**Cost-Optimal Threshold tab:** shows the eval report and lets you
-adjust the fraud-loss/false-positive-cost assumptions to see how the
-optimal threshold shifts.
+**Model Validation tab:** every offline analysis this project ran to
+check its own claims, consolidated into one accordion (Cost-Optimal
+Threshold/Sensitivity/Drift, Entity Escalation Ablation, Cold-Start
+Graph Features, Consistency) instead of five separate top-level tabs —
+so Live Scoring and Review Queue, the two interactive tabs, are the
+first two a judge sees. Nothing is deleted or hidden, just reorganized;
+each section adjusts the fraud-loss/false-positive-cost assumptions
+(Cost-Optimal Threshold) or shows the real report from its underlying
+script (the other three), expanding on click.
 
 ### Docker (alternative to steps 4-5)
 
@@ -425,10 +493,14 @@ risk-manager/
     └── src/
         ├── api/client.ts        <- typed fetch client for the backend
         ├── components/
+        │   ├── Overview.tsx
         │   ├── LiveScoring.tsx (+ .test.tsx)
         │   ├── ReviewQueue.tsx (+ .test.tsx)
-        │   ├── ConsistencyAnalysis.tsx (+ .test.tsx)
-        │   └── CostAnalysis.tsx (+ .test.tsx)
+        │   ├── ModelValidation.tsx (+ .test.tsx)  <- accordion nesting the four below
+        │   ├── CostAnalysis.tsx (+ .test.tsx)     <- cost threshold, sensitivity, drift
+        │   ├── EscalationAblation.tsx (+ .test.tsx)
+        │   ├── ColdStartAnalysis.tsx (+ .test.tsx)
+        │   └── ConsistencyAnalysis.tsx (+ .test.tsx)
         ├── test/setup.ts
         └── App.tsx
 ```
@@ -593,35 +665,73 @@ scoring every transaction two ways: **baseline** (raw model score only,
 escalation forced to `NORMAL`) vs. **escalation-adjusted** (exactly what
 the live system does today). Run it yourself with
 `python src/escalation_ablation.py`; the full output is saved to
-`models/escalation_ablation_report.txt`. The numbers below are from that
-actual run against the current trained model (which includes the
-device/address graph features from Phase 3) — not invented:
+`models/escalation_ablation_report.txt`.
+
+The escalation state itself is a **severity-weighted "risk pressure"**,
+not a raw count of risky verdicts: a BLOCK contributes more than a
+REVIEW, and a high-scoring verdict contributes more than a borderline
+one (`VERDICT_WEIGHT`/`_risk_pressure()` in `entity_memory.py`). The
+WATCH/ELEVATED cutoffs against that pressure value were chosen by a real
+grid sweep (`sweep_pressure_thresholds()`), not guessed — 9 candidate
+(watch, elevated) pairs, each replayed against the full real test set,
+scored by the same cost formula (`false_negatives * avg_fraud_loss +
+false_positives * avg_fp_cost`) `train_model.py`'s own threshold
+derivation uses:
+
+| watch | elevated | recall | false-flag | cost (Rs) |
+|---|---|---|---|---|
+| 0.8 / 1.2 / 1.6 | 2.0 | 0.9031 | 0.1794 | 5,039,450 |
+| 0.8 / 1.2 / 1.6 | 2.8 | 0.8971 | 0.1594 | 4,817,150 |
+| **0.8 / 1.2 / 1.6** | **3.6** | **0.8937** | **0.1471** | **4,676,400 (chosen — lowest cost)** |
+
+**A real finding from that grid, worth stating plainly:** every WATCH
+candidate produced *identical* numbers for a given ELEVATED candidate.
+That's not a sweep bug — `decide_action()` only branches on
+`escalation.state == "ELEVATED"`; WATCH never changes the deterministic
+action, only the state label surfaced to the reviewer/LLM as an earlier
+informational heads-up. So the sweep could only actually optimize the
+ELEVATED cutoff (chosen: **3.6**); WATCH was picked for free at **0.8**
+(the most sensitive candidate, giving the earliest heads-up) since it
+has zero cost impact either way.
+
+The numbers below are from the actual run against the chosen cutoffs
+(against the current trained model, which includes the device/address
+graph features from Phase 3) — not invented:
 
 | | Baseline (no escalation) | Escalation-adjusted (live system) |
 |---|---|---|
-| Recall (frauds flagged) | 0.8834 (3,590 / 4,064) | 0.9097 (3,697 / 4,064) |
-| False-flag rate (legit txns flagged) | 0.1167 (13,312 / 114,044) | 0.2004 (22,857 / 114,044) |
+| Recall (frauds flagged) | 0.8834 (3,590 / 4,064) | 0.8937 (3,632 / 4,064) |
+| False-flag rate (legit txns flagged) | 0.1167 (13,312 / 114,044) | 0.1471 (16,776 / 114,044) |
 
-Escalation catches **107 more fraudulent transactions** than the raw
-score alone (+2.63 points of recall) — but it does so by flagging
-**9,545 more legitimate transactions** (+8.37 points of false-flag
+Escalation catches **42 more fraudulent transactions** than the raw
+score alone (+1.03 points of recall) — and does so by flagging
+**3,464 more legitimate transactions** (+3.04 points of false-flag
 rate). Isolating just the transactions where escalation history is what
 pushed the action higher than the raw score alone would have
-(`escalated_due_to_history == True`): there were **13,473** such flips,
-and only **336** of them (2.49%) were actually fraud.
+(`escalated_due_to_history == True`): there were **5,933** such flips,
+and only **193** of them (3.25%) were actually fraud.
 
-**Honest read:** at the current thresholds (`WATCH_THRESHOLD = 2`,
-`ELEVATED_THRESHOLD = 4` in `src/entity_memory.py`), escalation is a net
-recall win but a very blunt instrument — the overwhelming majority of
-what it flags is not fraud. It's defensible as a second-look signal
-feeding a human review queue (which is exactly how `decide_action()`
-uses it — pushing REVIEW to BLOCK, or ALLOW to REVIEW, never silently
-auto-blocking on escalation alone), but it should not be read as a
-precise fraud-ring detector in its current form. The most likely fix
-worth trying next is raising `WATCH_THRESHOLD`/`ELEVATED_THRESHOLD` and
-re-running this same ablation to see whether recall holds up as
-false-flag rate drops — that comparison is now a one-command rerun,
-not a re-architecture.
+**Honest read:** the severity-weighted formula, cost-tuned via a real
+grid sweep, is a real improvement over the original count-based
+version — same direction of effect (net recall win, more false
+positives), but a much blunter tradeoff cut down to size: the count-based
+version bought +2.63 points of recall for +8.37 points of false-flag
+rate (13,473 flips, 2.49% actually fraud); the severity-weighted,
+cost-chosen version buys +1.03 points of recall for +3.04 points of
+false-flag rate (5,933 flips, 3.25% actually fraud) — roughly a third
+of the false-positive volume for roughly a third of the recall gain,
+at a *better* flip precision. It's still a blunt instrument in absolute
+terms (under 3.3% of what it flags is actually fraud), and it's still
+defensible as a second-look signal feeding a human review queue
+(exactly how `decide_action()` uses it — pushing REVIEW to BLOCK, or
+ALLOW to REVIEW, never silently auto-blocking on escalation alone), not
+a precise fraud-ring detector. Note also that even at its cost-optimal
+cutoff, escalation still costs more (Rs 4,676,400) than the pure
+no-escalation baseline (~Rs 4,366,800 by the same formula) — the real
+tradeoff this project can measure is "how much less blunt can
+escalation be made," not "escalation beats no escalation on this cost
+metric," and this README says so rather than the more flattering
+half of that finding.
 
 ## Is the model still good later in the test window?
 
@@ -757,7 +867,8 @@ yourself with `python src/consistency_analysis.py` (needs a real
 `GEMINI_API_KEY`; it is a manual, occasional script, same as
 `train_model.py` — it does not run in CI). Output is saved to
 `models/consistency_report.json` (consumed by `GET
-/api/consistency-analysis` and the Consistency tab in the frontend) and
+/api/consistency-analysis` and the Consistency section of the Model
+Validation tab in the frontend) and
 `models/consistency_report.txt`.
 
 **Real result, and a real surprise along the way:** running this for

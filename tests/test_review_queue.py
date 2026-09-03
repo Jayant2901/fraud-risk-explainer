@@ -28,7 +28,13 @@ def queue_factory(request):
     return lambda: RedisReviewQueue(client)
 
 
-def make_item(verdict_id: str, risk_score: float, escalated: bool = False, entity_id: str = "e1") -> dict:
+def make_item(
+    verdict_id: str,
+    risk_score: float,
+    escalated: bool = False,
+    entity_id: str = "e1",
+    created_at: str = "2024-01-01T00:00:00+00:00",
+) -> dict:
     return {
         "verdict_id": verdict_id,
         "entity_id": entity_id,
@@ -39,6 +45,8 @@ def make_item(verdict_id: str, risk_score: float, escalated: bool = False, entit
         "escalated_due_to_history": escalated,
         "disposition": None,
         "disposed_at": None,
+        "created_at": created_at,
+        "notes": [],
     }
 
 
@@ -174,6 +182,65 @@ class TestReset:
         assert queue.get("v1") is None
         assert queue.list_pending() == []
         assert queue.metrics()["total_disposed"] == 0
+
+
+class TestNotes:
+    def test_unknown_verdict_raises(self, queue_factory):
+        queue = queue_factory()
+        with pytest.raises(UnknownVerdictError):
+            queue.add_note("nope", "Reviewer", "note text")
+
+    def test_add_note_appends_and_is_visible_on_get(self, queue_factory):
+        queue = queue_factory()
+        queue.add(make_item("v1", 50.0))
+
+        note = queue.add_note("v1", "Alice", "Looks like a stolen card.")
+        assert note["author"] == "Alice"
+        assert note["text"] == "Looks like a stolen card."
+        assert note["at"] is not None
+
+        assert queue.get("v1")["notes"] == [note]
+
+    def test_multiple_notes_accumulate_in_order(self, queue_factory):
+        queue = queue_factory()
+        queue.add(make_item("v1", 50.0))
+
+        queue.add_note("v1", "Alice", "first note")
+        queue.add_note("v1", "Bob", "second note")
+
+        notes = queue.get("v1")["notes"]
+        assert [n["text"] for n in notes] == ["first note", "second note"]
+
+
+class TestRelated:
+    def test_unknown_verdict_raises(self, queue_factory):
+        queue = queue_factory()
+        with pytest.raises(UnknownVerdictError):
+            queue.related("nope")
+
+    def test_no_related_items_returns_empty_list(self, queue_factory):
+        queue = queue_factory()
+        queue.add(make_item("v1", 50.0, entity_id="e1"))
+        assert queue.related("v1") == []
+
+    def test_only_same_entity_items_are_related_and_self_is_excluded(self, queue_factory):
+        queue = queue_factory()
+        queue.add(make_item("v1", 50.0, entity_id="e1", created_at="2024-01-01T00:00:00+00:00"))
+        queue.add(make_item("v2", 60.0, entity_id="e1", created_at="2024-01-02T00:00:00+00:00"))
+        queue.add(make_item("v3", 70.0, entity_id="e2", created_at="2024-01-03T00:00:00+00:00"))
+
+        related = queue.related("v1")
+        assert [i["verdict_id"] for i in related] == ["v2"]
+
+    def test_related_includes_disposed_items_sorted_most_recent_first(self, queue_factory):
+        queue = queue_factory()
+        queue.add(make_item("v1", 50.0, entity_id="e1", created_at="2024-01-01T00:00:00+00:00"))
+        queue.add(make_item("v2", 60.0, entity_id="e1", created_at="2024-01-03T00:00:00+00:00"))
+        queue.add(make_item("v3", 70.0, entity_id="e1", created_at="2024-01-02T00:00:00+00:00"))
+        queue.dispose("v2", CONFIRMED_FRAUD)
+
+        related = queue.related("v1")
+        assert [i["verdict_id"] for i in related] == ["v2", "v3"]
 
 
 class TestRedisSpecific:

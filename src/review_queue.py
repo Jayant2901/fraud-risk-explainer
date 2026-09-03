@@ -8,6 +8,12 @@ ablation comparison (escalated-flag precision vs. non-escalated-flag
 precision) from these LIVE dispositions instead of only the offline test
 set — see src/escalation_ablation.py for the offline version.
 
+Each item also carries a free-text note thread (add_note/POST
+/api/review-queue/{verdict_id}/notes) and supports a same-entity
+related-items lookup (related()/GET /api/review-queue/{verdict_id}/related)
+so a reviewer can see prior context for that entity without leaving the
+queue — case-management surface, not just a disposition button.
+
 Same REDIS_URL-optional design as entity_memory.py/redis_utils.py:
 in-process by default (a dict), Redis-backed (a hash of items + a set of
 pending ids) when a redis_client is given — see create_review_queue().
@@ -24,6 +30,13 @@ REDIS_KEY_PREFIX = "riskmgr:review_queue"
 CONFIRMED_FRAUD = "CONFIRMED_FRAUD"
 FALSE_POSITIVE = "FALSE_POSITIVE"
 VALID_DISPOSITIONS = {CONFIRMED_FRAUD, FALSE_POSITIVE}
+
+# Reviewer-authored note text — generous compared to llm_agent.py's
+# MAX_FIELD_LEN (200, for untrusted transaction fields interpolated into
+# an LLM prompt); this is a human typing a real note in a form, not
+# untrusted injected data, so it's validated (reject over-length via the
+# API's Pydantic model) rather than silently truncated.
+NOTE_MAX_LEN = 2000
 
 
 class UnknownVerdictError(Exception):
@@ -94,6 +107,26 @@ class ReviewQueue:
     def metrics(self) -> dict:
         return _compute_metrics(list(self._items.values()))
 
+    def add_note(self, verdict_id: str, author: str, text: str) -> dict:
+        item = self._items.get(verdict_id)
+        if item is None:
+            raise UnknownVerdictError(verdict_id)
+        note = {"author": author, "text": text, "at": _now_iso()}
+        item.setdefault("notes", []).append(note)
+        return note
+
+    def related(self, verdict_id: str) -> list[dict]:
+        """Other items (pending or disposed) sharing this item's
+        entity_id, most recent first."""
+        item = self._items.get(verdict_id)
+        if item is None:
+            raise UnknownVerdictError(verdict_id)
+        others = [
+            i for i in self._items.values()
+            if i["verdict_id"] != verdict_id and i["entity_id"] == item["entity_id"]
+        ]
+        return sorted(others, key=lambda i: i["created_at"], reverse=True)
+
     def reset(self) -> None:
         """Test-only."""
         self._items.clear()
@@ -156,6 +189,29 @@ class RedisReviewQueue:
         items = [self.get(vid) for vid in ids]
         items = [i for i in items if i is not None]
         return _compute_metrics(items)
+
+    def add_note(self, verdict_id: str, author: str, text: str) -> dict:
+        item = self.get(verdict_id)
+        if item is None:
+            raise UnknownVerdictError(verdict_id)
+        note = {"author": author, "text": text, "at": _now_iso()}
+        item.setdefault("notes", []).append(note)
+        self._redis.set(self._item_key(verdict_id), json.dumps(item))
+        return note
+
+    def related(self, verdict_id: str) -> list[dict]:
+        """Other items (pending or disposed) sharing this item's
+        entity_id, most recent first."""
+        item = self.get(verdict_id)
+        if item is None:
+            raise UnknownVerdictError(verdict_id)
+        ids = self._redis.smembers(self._all_key())
+        items = [self.get(vid) for vid in ids]
+        others = [
+            i for i in items
+            if i is not None and i["verdict_id"] != verdict_id and i["entity_id"] == item["entity_id"]
+        ]
+        return sorted(others, key=lambda i: i["created_at"], reverse=True)
 
     def reset(self) -> None:
         """Test-only, scoped to this module's own key prefix — never a

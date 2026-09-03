@@ -50,6 +50,8 @@ export interface CostAnalysis {
   eval_report: string | null;
   defaults: { avg_fraud_loss: number; avg_fp_cost: number };
   params: { fraud_loss: number; fp_cost: number };
+  headline_monthly_savings_estimate: number | null;
+  headline_basis: string | null;
 }
 
 export interface CostSensitivityCell {
@@ -75,6 +77,12 @@ export interface CostSensitivityResult {
   message: string | null;
 }
 
+export interface ReviewNote {
+  author: string;
+  text: string;
+  at: string;
+}
+
 export interface ReviewQueueItem {
   verdict_id: string;
   entity_id: string;
@@ -85,6 +93,8 @@ export interface ReviewQueueItem {
   escalated_due_to_history: boolean;
   disposition: "CONFIRMED_FRAUD" | "FALSE_POSITIVE" | null;
   disposed_at: string | null;
+  created_at: string;
+  notes: ReviewNote[];
 }
 
 export interface DriftBucket {
@@ -157,6 +167,11 @@ export interface CustomTransactionRequest {
   addr2?: number;
   hour_of_day?: number;
   attach_to_entity_id?: string | null;
+}
+
+export interface TextReportResult {
+  report: string | null;
+  message: string | null;
 }
 
 export interface ReviewQueueMetrics {
@@ -234,6 +249,15 @@ export const api = {
       body: JSON.stringify({ disposition }),
     }),
   reviewQueueMetrics: () => request<ReviewQueueMetrics>("/review-queue/metrics"),
+  addReviewNote: (verdictId: string, text: string, author = "Reviewer") =>
+    request<ReviewNote>(`/review-queue/${encodeURIComponent(verdictId)}/notes`, {
+      method: "POST",
+      body: JSON.stringify({ author, text }),
+    }),
+  relatedReviewItems: (verdictId: string) =>
+    request<{ items: ReviewQueueItem[] }>(`/review-queue/${encodeURIComponent(verdictId)}/related`),
   driftAnalysis: () => request<DriftAnalysisResult>("/drift-analysis"),
   consistencyAnalysis: () => request<ConsistencyAnalysisResult>("/consistency-analysis"),
+  escalationAblation: () => request<TextReportResult>("/escalation-ablation"),
+  coldStartAnalysis: () => request<TextReportResult>("/cold-start-analysis"),
 };

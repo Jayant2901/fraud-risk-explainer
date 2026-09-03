@@ -4,6 +4,10 @@ from escalation_ablation import (
     compute_strategy_metrics,
     compute_escalation_flip_precision,
     build_report,
+    compute_cost,
+    replay_with_pressure_escalation,
+    sweep_pressure_thresholds,
+    build_sweep_report,
 )
 
 
@@ -80,6 +84,84 @@ class TestComputeEscalationFlipPrecision:
         result = compute_escalation_flip_precision(replay_df)
 
         assert result["precision"] == 1.0
+
+
+class TestComputeCost:
+    def test_hand_computable_cost(self):
+        is_fraud = pd.Series([1, 1, 0, 0])
+        action = pd.Series(["ALLOW", "BLOCK", "REVIEW", "ALLOW"])
+        # false negative: row0 (fraud, not flagged) -> 1 * avg_fraud_loss
+        # false positive: row2 (legit, flagged) -> 1 * avg_fp_cost
+        cost = compute_cost(is_fraud, action, avg_fraud_loss=5000.0, avg_fp_cost=150.0)
+        assert cost == 5000.0 + 150.0
+
+    def test_no_errors_costs_nothing(self):
+        is_fraud = pd.Series([1, 0])
+        action = pd.Series(["BLOCK", "ALLOW"])
+        assert compute_cost(is_fraud, action) == 0.0
+
+
+class TestSweepPressureThresholds:
+    """entity e1: two BLOCKs at risk_score=85 (each contributes
+    VERDICT_WEIGHT["BLOCK"] * 0.85 = 1.7 pressure -> 3.4 total after
+    both), then a third, legit transaction at risk_score=30 (below the
+    review threshold on its own). 3.4 clears the 2.0 and 2.8 ELEVATED
+    candidates but not 3.6, so escalating that third transaction to
+    REVIEW is a pure false positive under the two lower candidates —
+    the 3.6 candidate should come out cheapest."""
+
+    def _sweep(self):
+        test_df = pd.DataFrame([
+            {"entity_id": "e1", "isFraud": 0},
+            {"entity_id": "e1", "isFraud": 0},
+            {"entity_id": "e1", "isFraud": 0},
+        ])
+        risk_scores = pd.Series([85.0, 85.0, 30.0])
+        thresholds = {"review": 40.0, "block": 80.0}
+        return sweep_pressure_thresholds(test_df, risk_scores, thresholds)
+
+    def test_picks_the_lowest_cost_elevated_cutoff(self):
+        results = self._sweep()
+        chosen = min(results, key=lambda r: r["cost"])
+        assert chosen["elevated_threshold"] == 3.6
+
+    def test_every_watch_candidate_ties_for_a_given_elevated_candidate(self):
+        # decide_action() never branches on WATCH, only ELEVATED — so
+        # varying the watch cutoff alone must never change the cost.
+        results = self._sweep()
+        by_elevated: dict[float, set[float]] = {}
+        for r in results:
+            by_elevated.setdefault(r["elevated_threshold"], set()).add(r["cost"])
+        assert all(len(costs) == 1 for costs in by_elevated.values())
+
+    def test_replay_with_pressure_escalation_matches_the_sweep_row_directly(self):
+        test_df = pd.DataFrame([
+            {"entity_id": "e1", "isFraud": 0},
+            {"entity_id": "e1", "isFraud": 0},
+            {"entity_id": "e1", "isFraud": 0},
+        ])
+        risk_scores = pd.Series([85.0, 85.0, 30.0])
+        thresholds = {"review": 40.0, "block": 80.0}
+
+        # elevated=2.0: 3.4 pressure clears it -> third txn escalates to REVIEW
+        low_cutoff_df = replay_with_pressure_escalation(test_df, risk_scores, thresholds, 0.8, 2.0)
+        assert list(low_cutoff_df["adjusted_action"]) == ["BLOCK", "BLOCK", "REVIEW"]
+
+        # elevated=3.6: 3.4 pressure doesn't clear it -> third txn stays ALLOW
+        high_cutoff_df = replay_with_pressure_escalation(test_df, risk_scores, thresholds, 0.8, 3.6)
+        assert list(high_cutoff_df["adjusted_action"]) == ["BLOCK", "BLOCK", "ALLOW"]
+
+
+class TestBuildSweepReport:
+    def test_marks_the_lowest_cost_row_as_chosen(self):
+        results = [
+            {"watch_threshold": 0.8, "elevated_threshold": 2.0, "recall": 0.9, "false_flag_rate": 0.2, "cost": 500.0},
+            {"watch_threshold": 0.8, "elevated_threshold": 3.6, "recall": 0.85, "false_flag_rate": 0.1, "cost": 300.0},
+        ]
+        report = build_sweep_report(results)
+        chosen_lines = [line for line in report.splitlines() if "chosen (lowest cost)" in line]
+        assert len(chosen_lines) == 1
+        assert "3.6" in chosen_lines[0]
 
 
 class TestBuildReport:
