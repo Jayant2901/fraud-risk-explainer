@@ -164,7 +164,7 @@ def train(df=None):
     )
     print(summary)
 
-    with open(REPORT_PATH, "w") as f:
+    with open(REPORT_PATH, "w", encoding="utf-8") as f:
         f.write(summary)
 
     joblib.dump(model, MODEL_PATH)
@@ -172,7 +172,7 @@ def train(df=None):
     joblib.dump(optimal_t, THRESHOLD_PATH)
     joblib.dump(categories_map, CATEGORIES_PATH)
     joblib.dump(decision_thresholds, DECISION_THRESHOLDS_PATH)
-    with open(COST_SUMMARY_PATH, "w") as f:
+    with open(COST_SUMMARY_PATH, "w", encoding="utf-8") as f:
         json.dump({
             "estimated_savings": cost_result["estimated_savings"],
             "estimated_savings_pct": cost_result["estimated_savings_pct"],

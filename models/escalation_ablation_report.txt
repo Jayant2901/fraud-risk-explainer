@@ -12,9 +12,9 @@ Candidates: watch in [0.8, 1.2, 1.6], elevated in [2.0, 2.8, 3.6] (elevated > wa
     1.6       2.8    0.8971      0.1594     4,817,150  
     1.6       3.6    0.8937      0.1471     4,676,400  
 
-Chosen cutoffs: watch=0.8, elevated=3.6 — hardcoded as entity_memory.py's DEFAULT_WATCH_PRESSURE_THRESHOLD/DEFAULT_ELEVATED_PRESSURE_THRESHOLD (current live values: 0.8/3.6).
+Chosen cutoffs: watch=0.8, elevated=3.6 â€” hardcoded as entity_memory.py's DEFAULT_WATCH_PRESSURE_THRESHOLD/DEFAULT_ELEVATED_PRESSURE_THRESHOLD (current live values: 0.8/3.6).
 
-Real finding from this grid, reported honestly: every watch candidate produced IDENTICAL recall/false-flag/cost numbers for a given elevated candidate (see the rows above). That's not a bug — decision_rules.decide_action() only branches on escalation.state == 'ELEVATED'; WATCH never changes the deterministic action, only the state label shown to the reviewer/LLM as an earlier heads-up. So this sweep could only actually optimize the elevated cutoff; the watch cutoff was picked for free (0.8, the most sensitive candidate, giving the earliest informational signal) since it has zero cost impact either way.
+Real finding from this grid, reported honestly: every watch candidate produced IDENTICAL recall/false-flag/cost numbers for a given elevated candidate (see the rows above). That's not a bug â€” decision_rules.decide_action() only branches on escalation.state == 'ELEVATED'; WATCH never changes the deterministic action, only the state label shown to the reviewer/LLM as an earlier heads-up. So this sweep could only actually optimize the elevated cutoff; the watch cutoff was picked for free (0.8, the most sensitive candidate, giving the earliest informational signal) since it has zero cost impact either way.
 
 Escalation ablation study
 ==========================

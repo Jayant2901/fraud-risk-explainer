@@ -357,7 +357,7 @@ def run():
     report = sweep_report + "\n" + build_report(replay_df)
     print(report)
 
-    with open(REPORT_PATH, "w") as f:
+    with open(REPORT_PATH, "w", encoding="utf-8") as f:
         f.write(report)
     print(f"Saved -> {REPORT_PATH}")
 

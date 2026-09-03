@@ -29,4 +29,4 @@ Estimated savings vs default: Rs 421,850 (8.8%)
 
 === Live decision boundaries (derived, 0-100 risk-score scale) ===
 REVIEW threshold: 34.0 (= cost-optimal threshold under default cost assumptions, x100)
-BLOCK threshold:  71.0 (= cost-optimal threshold with avg_fp_cost scaled 6.0x, x100 — 'only act on high confidence')
+BLOCK threshold:  71.0 (= cost-optimal threshold with avg_fp_cost scaled 6.0x, x100 â€” 'only act on high confidence')

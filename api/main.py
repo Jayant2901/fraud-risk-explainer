@@ -521,7 +521,7 @@ def get_cost_analysis(
 ):
     eval_report = None
     if os.path.exists(EVAL_REPORT_PATH):
-        with open(EVAL_REPORT_PATH) as f:
+        with open(EVAL_REPORT_PATH, encoding="utf-8") as f:
             eval_report = f.read()
 
     # Phase H's headline number — a linear extrapolation of the real,
@@ -532,7 +532,7 @@ def get_cost_analysis(
     # other report field on this endpoint.
     headline = None
     if os.path.exists(COST_SUMMARY_PATH):
-        with open(COST_SUMMARY_PATH) as f:
+        with open(COST_SUMMARY_PATH, encoding="utf-8") as f:
             cost_summary = json.load(f)
         headline = extrapolate_monthly_savings(
             cost_summary["estimated_savings"], cost_summary["n_test_transactions"]
@@ -557,7 +557,7 @@ def get_cost_sensitivity():
             "sensitivity": None,
             "message": "No sensitivity sweep yet — run `python src/cost_sensitivity.py` to generate one.",
         }
-    with open(COST_SENSITIVITY_REPORT_PATH) as f:
+    with open(COST_SENSITIVITY_REPORT_PATH, encoding="utf-8") as f:
         return {"sensitivity": json.load(f), "message": None}
 
 
@@ -568,7 +568,7 @@ def get_escalation_ablation():
             "report": None,
             "message": "No ablation report yet — run `python src/escalation_ablation.py` to generate one.",
         }
-    with open(ESCALATION_ABLATION_REPORT_PATH) as f:
+    with open(ESCALATION_ABLATION_REPORT_PATH, encoding="utf-8") as f:
         return {"report": f.read(), "message": None}
 
 

@@ -83,13 +83,13 @@ def run():
         base_fp_cost=DEFAULT_AVG_FP_COST,
     )
 
-    with open(JSON_REPORT_PATH, "w") as f:
+    with open(JSON_REPORT_PATH, "w", encoding="utf-8") as f:
         json.dump(result, f, indent=2)
     print(f"Saved -> {JSON_REPORT_PATH}")
 
     text_report = build_text_report(result)
     print(text_report)
-    with open(TEXT_REPORT_PATH, "w") as f:
+    with open(TEXT_REPORT_PATH, "w", encoding="utf-8") as f:
         f.write(text_report)
     print(f"Saved -> {TEXT_REPORT_PATH}")
 
