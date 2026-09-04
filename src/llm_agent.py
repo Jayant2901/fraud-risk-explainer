@@ -19,6 +19,7 @@ to a free key from https://aistudio.google.com/apikey.
 """
 import logging
 import os
+import queue
 import re
 import threading
 import time
@@ -206,6 +207,62 @@ def _run_with_timeout(call, timeout_seconds: float):
     return result.get("value")
 
 
+def _iterate_with_timeout(make_iterable, timeout_seconds: float):
+    """Yield items from a blocking iterable (opening the stream AND every
+    `next()` on it) under one hard wall-clock ceiling.
+
+    `for chunk in stream:` on its own cannot be bounded by checking
+    time.monotonic() inside the loop body: that check only runs once a
+    blocking next() call has already RETURNED, so a slow-to-arrive first
+    chunk (or a slow gap between two chunks) blocks for however long the
+    underlying network call actually takes — completely unbounded — and
+    the "timeout" only gets detected after the fact, once it's too late
+    to have prevented the wait. Confirmed against the real Gemini API
+    during a live walkthrough (Phase 10, FIX-2): generate_content_stream
+    itself returned in well under LLM_TIMEOUT_SECONDS (it hands back a
+    lazy iterator), but the first real chunk took 25s to arrive against a
+    20s budget — the old code detected that only at the 25s mark.
+
+    Fixed the same way _run_with_timeout bounds a single blocking call:
+    a daemon thread does the real (blocking) iteration and pushes each
+    item onto a queue; the deadline is enforced on queue.get(timeout=...),
+    which — unlike a bare `for item in iterable:` — actually returns
+    control on schedule regardless of what the producer thread is stuck
+    on. The abandoned thread can't outlive the process (daemon) and the
+    SDK's own socket timeout eventually releases it, same tolerance
+    _run_with_timeout already documents.
+    """
+    q: "queue.Queue" = queue.Queue()
+    _ITEM, _DONE, _ERROR = "item", "done", "error"
+
+    def produce():
+        try:
+            for item in make_iterable():
+                q.put((_ITEM, item))
+            q.put((_DONE, None))
+        except BaseException as exc:  # re-raised on the caller's thread
+            q.put((_ERROR, exc))
+
+    thread = threading.Thread(target=produce, daemon=True)
+    thread.start()
+
+    deadline = time.monotonic() + timeout_seconds
+    while True:
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            raise LLMTimeoutError(f"LLM stream exceeded {timeout_seconds}s")
+        try:
+            kind, payload = q.get(timeout=remaining)
+        except queue.Empty:
+            raise LLMTimeoutError(f"LLM stream exceeded {timeout_seconds}s")
+        if kind == _ITEM:
+            yield payload
+        elif kind == _DONE:
+            return
+        else:
+            raise payload
+
+
 def _fallback_for_exception(exc: Exception) -> dict:
     if isinstance(exc, LLMTimeoutError):
         logger.warning("Gemini API call timed out: %s", exc)
@@ -374,16 +431,13 @@ class RiskExplainerAgent:
 
         user_prompt = build_user_prompt(risk_score, top_factors, escalation)
         accumulated = []
-        deadline = time.monotonic() + self.timeout_seconds
 
         try:
             client = self._client or genai.Client()
             self._client = client
-            # Opening the stream is itself a network call that can hang,
-            # so it gets the same ceiling as the batch path — the
-            # per-chunk deadline below only covers gaps once data flows.
-            stream = _run_with_timeout(
-                lambda: client.models.generate_content_stream(
+
+            def make_stream():
+                return client.models.generate_content_stream(
                     model=self.model,
                     contents=user_prompt,
                     config=types.GenerateContentConfig(
@@ -392,15 +446,14 @@ class RiskExplainerAgent:
                         response_schema=RiskVerdict,
                         max_output_tokens=MAX_OUTPUT_TOKENS,
                     ),
-                ),
-                self.timeout_seconds,
-            )
-            for chunk in stream:
-                # The budget covers the whole stream, not each chunk: a
-                # model that emits a token every 19s must not stay on the
-                # wire forever just because no single gap is long.
-                if time.monotonic() > deadline:
-                    raise LLMTimeoutError(f"LLM stream exceeded {self.timeout_seconds}s")
+                )
+
+            # One ceiling covers constructing the stream AND consuming
+            # it — see _iterate_with_timeout's docstring for why a bare
+            # `for chunk in stream:` can't be trusted to bound this on
+            # its own, no matter how carefully the deadline is checked
+            # inside the loop body.
+            for chunk in _iterate_with_timeout(make_stream, self.timeout_seconds):
                 text = getattr(chunk, "text", None)
                 if not text:
                     continue

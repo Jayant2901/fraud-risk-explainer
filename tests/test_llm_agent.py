@@ -357,6 +357,53 @@ class TestTimeout(unittest.TestCase):
 
         assert "did not respond within the time limit" in verdict["explanation"]
 
+    def _slow_first_chunk_client(self):
+        """Unlike _hanging_client above (where the CALL to
+        generate_content_stream itself blocks), this mock returns
+        instantly — a lazy iterator, matching the real google-genai SDK
+        — and the block happens on the first next() instead. A real
+        live-browser walkthrough (Phase 10, FIX-2) hit exactly this: the
+        call to generate_content_stream returned in well under the
+        20s budget, but the first real chunk took 25s to arrive, and the
+        old per-chunk-deadline-check code (`for chunk in stream: if
+        time.monotonic() > deadline: raise ...`) could only detect that
+        AFTER the 25s blocking wait had already happened — the actual
+        wait was never bounded by the timeout at all."""
+        import threading
+
+        never = threading.Event()
+        client = MagicMock()
+
+        def make_stream(*_args, **_kwargs):
+            def gen():
+                never.wait(30)  # far beyond the injected timeout
+                yield MagicMock(text="too late")
+            return gen()  # returns instantly; the block is on the first next()
+
+        client.models.generate_content_stream.side_effect = make_stream
+        return client
+
+    def test_a_stream_that_returns_instantly_but_blocks_on_the_first_chunk_still_times_out(self):
+        agent = RiskExplainerAgent(client=self._slow_first_chunk_client(), timeout_seconds=0.2)
+
+        verdict = list(agent.explain_stream(85.0, TOP_FACTORS))[-1]["verdict"]
+
+        assert "did not respond within the time limit" in verdict["explanation"]
+
+    def test_a_slow_first_chunk_does_not_block_wall_clock_time_past_the_timeout(self):
+        """The regression this guards against: the old code's actual
+        wait time was however long the mock's hang lasted (here, up to
+        30s), not the configured 0.3s budget."""
+        import time
+
+        agent = RiskExplainerAgent(client=self._slow_first_chunk_client(), timeout_seconds=0.3)
+
+        start = time.monotonic()
+        list(agent.explain_stream(85.0, TOP_FACTORS))
+        elapsed = time.monotonic() - start
+
+        assert elapsed < 3.0  # bounded by the timeout, not the 30s hang
+
     def test_a_call_inside_the_budget_is_unaffected(self):
         parsed = RiskVerdict.model_validate_json(VALID_VERDICT_JSON)
         agent = RiskExplainerAgent(client=make_client(parsed=parsed), timeout_seconds=5)
