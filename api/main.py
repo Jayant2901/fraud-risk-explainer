@@ -69,6 +69,7 @@ from scoring_service import FALLBACK_VERDICT, ScoringService, generate_explanati
 from explanation_bus import ExplanationBus
 from circuit_breaker import CircuitBreaker
 from feature_store import create_feature_store, seed_from_history
+from notifications import create_notifier
 from feedback_export import export_feedback, to_json_summary
 import event_stream
 
@@ -205,6 +206,11 @@ _explanation_bus = ExplanationBus(_redis_client)
 _feature_store = create_feature_store(_redis_client)
 _feature_store_seed = {"seeded_rows": 0}
 
+# Alerts a fraud team when a scored transaction pushes an entity into a
+# worse escalation state. Opt-in: no-op until ESCALATION_WEBHOOK_URL is
+# set — see src/notifications.py.
+_notifier = create_notifier(_redis_client)
+
 
 def _generate_explanation(verdict_id: str, risk_score: float, top_factors: list, escalation: dict):
     """Background task. Streams the LLM response, publishing each delta to
@@ -290,6 +296,7 @@ def _scoring_service() -> ScoringService:
         explanations_cache=_explanations_cache,
         thresholds_provider=get_decision_thresholds,
         feature_store=_feature_store,
+        notifier=_notifier,
     )
 
 
@@ -938,6 +945,9 @@ def health():
         # never seeded would score early transactions against empty
         # history, and nothing else would show that.
         "feature_store": {**_feature_store.stats(), **_feature_store_seed},
+        "escalation_alerts": {
+            "webhook_configured": bool(os.environ.get("ESCALATION_WEBHOOK_URL")),
+        },
     }
 
 

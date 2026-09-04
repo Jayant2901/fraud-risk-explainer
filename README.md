@@ -871,6 +871,36 @@ shared across restarts/workers too.
   conventions assume network-level access control, not an application
   key, and it's operational data, not customer data.
 
+## Escalation alerting
+
+`entity_memory.py` computes an entity's escalation state
+(`NORMAL`/`WATCH`/`ELEVATED`) on every scored transaction, but until now
+nothing surfaced the *transition* — the moment an entity crosses into a
+worse state, which is exactly the moment a fraud team would want paged.
+`src/notifications.py` is that surface, wired into `ScoringService` (both
+`api/main.py`'s synchronous endpoints and `src/stream_consumer.py`'s
+async path, so no scoring route is blind to it).
+
+- **Only escalating transitions alert** (`NORMAL`→`WATCH`,
+  `WATCH`→`ELEVATED`, `NORMAL`→`ELEVATED`). A de-escalation is just the
+  rolling verdict window aging an old high-risk verdict out — not a new
+  event — so alerting on it would be noise.
+- **Opt-in, like the feedback loop.** `ESCALATION_WEBHOOK_URL` unset (the
+  default): transitions are still logged, but nothing is sent anywhere.
+  Set it, and each alert-worthy transition is POSTed there as JSON.
+- **Never on the request path.** The webhook call happens on a daemon
+  thread, with a short timeout and every exception swallowed and logged
+  — a broken alerting endpoint must never add latency to, or fail, the
+  scoring request that triggered it.
+- **Per-entity cooldown** (`ESCALATION_ALERT_COOLDOWN_SECONDS`, default
+  300s) so an entity oscillating across a threshold doesn't page on every
+  transaction. Cooldown state lives in Redis when configured (shared
+  across workers — the same dual-backend pattern as `circuit_breaker.py`)
+  and in-process otherwise.
+- **Diagnosable, not silent:** `GET /api/health` reports
+  `escalation_alerts.webhook_configured` so "why did nobody get paged"
+  has an answer besides reading source.
+
 ## Does the cost-optimal threshold hold up under different cost assumptions?
 
 `models/eval_report.txt` quotes one cost-optimal threshold (0.34) computed

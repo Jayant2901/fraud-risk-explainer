@@ -121,6 +121,13 @@ class TestHealth:
         assert body["status"] == "ok"
         assert body["llm"]["state"] == "unknown"
 
+    def test_reports_whether_an_escalation_webhook_is_configured(self, client, monkeypatch):
+        monkeypatch.delenv("ESCALATION_WEBHOOK_URL", raising=False)
+
+        body = client.get("/api/health").json()
+
+        assert body["escalation_alerts"]["webhook_configured"] is False
+
 
 class TestListEntities:
     def test_returns_unique_entity_ids(self, client, auth_headers):
@@ -1125,6 +1132,65 @@ class TestFeedbackExport:
 
     def test_requires_an_api_key(self, client):
         assert client.get("/api/feedback/export").status_code == 401
+
+
+class TestEscalationAlerts:
+    """Integration coverage for the wiring, not the transition/cooldown
+    logic itself — that's tests/test_notifications.py. Swaps in a spy
+    EscalationNotifier so a real scoring call through the API can be
+    asserted to have reached it."""
+
+    def _spy_notifier(self, monkeypatch):
+        import api.main as main
+        from notifications import EscalationNotifier
+
+        sent = []
+        monkeypatch.setattr(main, "_notifier", EscalationNotifier(sent.append))
+        return sent
+
+    def test_an_escalating_verdict_notifies(self, client, auth_headers, monkeypatch):
+        import api.main as main
+        from tests.conftest import FakeExplainer
+
+        sent = self._spy_notifier(monkeypatch)
+        monkeypatch.setattr(main, "get_explainer", lambda: FakeExplainer(risk_score=90.0))
+
+        client.post(
+            "/api/score-custom",
+            json={"TransactionAmt": 100.0, "attach_to_entity_id": "entity-escalates"},
+            headers=auth_headers,
+        )
+
+        assert len(sent) == 1
+        assert sent[0]["entity_id"] == "entity-escalates"
+        assert sent[0]["from_state"] == "NORMAL"
+        assert sent[0]["to_state"] == "WATCH"
+
+    def test_a_verdict_that_does_not_change_state_does_not_notify(self, client, auth_headers, monkeypatch):
+        import api.main as main
+        from tests.conftest import FakeExplainer
+
+        sent = self._spy_notifier(monkeypatch)
+        monkeypatch.setattr(main, "get_explainer", lambda: FakeExplainer(risk_score=5.0))
+
+        client.post(
+            "/api/score-custom",
+            json={"TransactionAmt": 100.0, "attach_to_entity_id": "entity-calm"},
+            headers=auth_headers,
+        )
+
+        assert sent == []
+
+    def test_an_unattached_custom_transaction_never_notifies(self, client, auth_headers, monkeypatch):
+        import api.main as main
+        from tests.conftest import FakeExplainer
+
+        sent = self._spy_notifier(monkeypatch)
+        monkeypatch.setattr(main, "get_explainer", lambda: FakeExplainer(risk_score=90.0))
+
+        client.post("/api/score-custom", json={"TransactionAmt": 100.0}, headers=auth_headers)
+
+        assert sent == []
 
 
 class TestDeadLetterEndpoint:

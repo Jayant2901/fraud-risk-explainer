@@ -83,7 +83,7 @@ class ScoringService:
     """
 
     def __init__(self, explainer, memory, review_queue, explanations_cache, thresholds_provider,
-                 feature_store=None):
+                 feature_store=None, notifier=None):
         self._explainer = explainer
         self._memory = memory
         self._review_queue = review_queue
@@ -93,6 +93,10 @@ class ScoringService:
         # transaction is scored against LIVE entity/device history rather
         # than the frozen training snapshot — see src/feature_store.py.
         self._feature_store = feature_store
+        # Optional for the same reason. When present, notified with the
+        # entity's escalation state before/after this verdict is recorded
+        # — see src/notifications.py for what counts as alert-worthy.
+        self._notifier = notifier
         # A callable rather than a dict: api/main.py resolves thresholds
         # through an lru_cache'd getter that tests monkeypatch, and this
         # has to keep seeing the patched value.
@@ -159,10 +163,18 @@ class ScoringService:
             risk_score, {"state": "NORMAL"}, thresholds["review"], thresholds["block"]
         )
 
+        escalation_after = escalation_before
         if entity_id and record_verdict:
             self._memory.record_verdict(entity_id, decision["action"], risk_score)
+            escalation_after = self._memory.get_escalation_state(entity_id)
 
         verdict_id = str(uuid.uuid4())
+
+        if entity_id and record_verdict and self._notifier is not None:
+            self._notifier.notify_transition(
+                entity_id, escalation_before.get("state"), escalation_after.get("state"),
+                risk_score, verdict_id,
+            )
         self._explanations_cache.put(verdict_id, {"status": "pending"})
 
         if decision["action"] != "ALLOW":
