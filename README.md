@@ -855,6 +855,23 @@ Backed by the same optional Redis as entity memory (`storage_uri` on the
 budget is per-process unless `REDIS_URL` is set, in which case it's
 shared across restarts/workers too.
 
+## Load testing
+
+`ops/load/locustfile.py` drives `POST /api/score-custom` (only
+`TransactionAmt` required — no dataset seeding needed) plus
+`GET /api/health`. It's also the tool that found a real bug: the very
+first run returned 500 on every request that got past the rate limiter,
+100% reproducible, in code no test had ever exercised against the real
+model (every API test mocks `RiskExplainer`). Root cause, fix, and every
+number this section produced — real hardware, real measured latency, no
+estimates — are in **[docs/performance.md](docs/performance.md)**.
+
+```bash
+pip install -r requirements-dev.txt
+API_KEY=<key> locust -f ops/load/locustfile.py --host http://localhost:8000 \
+    --headless --users 20 --spawn-rate 5 --run-time 60s
+```
+
 ## Observability
 
 - **Structured logs:** every log line the app emits is JSON (see

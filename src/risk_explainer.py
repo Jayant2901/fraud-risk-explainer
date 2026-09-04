@@ -103,6 +103,22 @@ class RiskExplainer:
             if col in X.columns:
                 X[col] = pd.Categorical(X[col], categories=categories)
 
+        # Every other (numeric) column missing from txn is a Python None
+        # from the row-building dict comprehension above. A single-row
+        # DataFrame column of all-None infers as pandas 'object' dtype,
+        # not float64/NaN — XGBoost's predict path rejects 'object'
+        # outright, even though the value itself is just a missing
+        # marker. Real historical rows (POST /api/score, sourced from a
+        # properly-typed multi-row DataFrame) never hit this; a
+        # from-scratch dict (POST /api/score-custom, most fields
+        # deliberately left unset — see CustomTransactionRequest) always
+        # did. Coercing to numeric turns None into NaN, which is exactly
+        # the missing-value representation XGBoost's own native handling
+        # already expects (see this method's docstring) — real numeric
+        # values pass through unchanged.
+        numeric_cols = [c for c in X.columns if c not in self.categories_map]
+        X[numeric_cols] = X[numeric_cols].apply(pd.to_numeric, errors="coerce")
+
         proba = float(self.model.predict_proba(X)[0, 1])
         risk_score = round(proba * 100, 1)
 

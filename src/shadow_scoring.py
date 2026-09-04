@@ -54,6 +54,12 @@ class ShadowScorer:
         for col, categories in self.categories_map.items():
             if col in X.columns:
                 X[col] = pd.Categorical(X[col], categories=categories)
+        # Same None -> object-dtype trap RiskExplainer.score_transaction
+        # fixes and documents in full: a missing numeric column becomes
+        # pandas 'object' dtype in a single-row DataFrame, which XGBoost
+        # rejects outright. Coerce to numeric so None becomes NaN.
+        numeric_cols = [c for c in X.columns if c not in self.categories_map]
+        X[numeric_cols] = X[numeric_cols].apply(pd.to_numeric, errors="coerce")
         proba = float(self.model.predict_proba(X)[0, 1])
         return round(proba * 100, 1)
 

@@ -85,6 +85,26 @@ class TestScoreTransaction:
             result = explainer.score_transaction({"amount": 100.0, "hour": 5, "category_col": category_value})
             assert 0 <= result["risk_score"] <= 100
 
+    def test_missing_numeric_field_regression(self, trained_artifacts):
+        """
+        Regression test for a real bug load testing (RT-10) surfaced:
+        POST /api/score-custom needs only TransactionAmt (see
+        CustomTransactionRequest), so every other numeric feature is
+        missing from txn and defaults to Python None via
+        `txn.get(c, None)`. A single-row DataFrame column that is all
+        None infers as pandas 'object' dtype, not float64/NaN -- and
+        XGBoost's predict path rejects 'object' outright, even though
+        the value is just a missing marker. POST /api/score never hit
+        this (its rows come from an already-typed multi-row DataFrame),
+        so this went uncaught until an actual load test hit the real
+        model instead of a test double. If the numeric-coercion in
+        score_transaction were ever removed, this raises a ValueError
+        from inside XGBoost instead of returning a score.
+        """
+        explainer = RiskExplainer(**trained_artifacts)
+        result = explainer.score_transaction({"amount": 100.0})  # "hour" omitted entirely
+        assert 0 <= result["risk_score"] <= 100
+
     def test_uses_default_threshold_when_threshold_file_is_missing(self, trained_artifacts, tmp_path):
         explainer = RiskExplainer(
             model_path=trained_artifacts["model_path"],
