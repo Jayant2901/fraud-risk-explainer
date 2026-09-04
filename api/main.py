@@ -69,6 +69,7 @@ from scoring_service import FALLBACK_VERDICT, ScoringService, generate_explanati
 from explanation_bus import ExplanationBus
 from circuit_breaker import CircuitBreaker
 from feature_store import create_feature_store, seed_from_history
+from feedback_export import export_feedback, to_json_summary
 import event_stream
 
 configure_logging()
@@ -475,6 +476,25 @@ def ingest_transaction_event(request: Request, req: TransactionEventRequest):
     _event_dedup_cache.put(req.event_id, accepted)
     logger.info("Transaction event accepted", extra={"event_id": req.event_id, "verdict_id": verdict_id})
     return {**accepted, "duplicate": False}
+
+
+@router.get("/api/feedback/export")
+def export_feedback_dataset(write_file: bool = False):
+    """Reviewer dispositions as a labelled dataset.
+
+    These are human-verified labels on exactly the transactions the model
+    was least certain about — and a censored sample: they exist only for
+    transactions the system flagged, so they say nothing about what it
+    confidently allowed. The response carries that caveat with the data
+    rather than leaving it to be rediscovered.
+
+    write_file=true also writes a CSV under data/feedback/ for
+    train_model.py --with-feedback to pick up.
+    """
+    summary = to_json_summary(_review_queue)
+    if write_file:
+        summary["written"] = export_feedback(_review_queue)
+    return summary
 
 
 @router.get("/api/events/dead-letter")

@@ -43,6 +43,36 @@ def _now_iso() -> str:
     return datetime.now(timezone.utc).isoformat()
 
 
+def _jsonable(txn: dict) -> dict:
+    """Queue items are JSON-serialized into Redis, but a replayed
+    historical transaction is a pandas row full of numpy scalars, NaNs and
+    Timestamps. Coerce to plain JSON types, dropping anything that can't
+    be represented rather than failing the scoring request over it."""
+    out = {}
+    for key, value in txn.items():
+        if value is None:
+            continue
+        item = value.item() if hasattr(value, "item") else value
+        if isinstance(item, float) and item != item:  # NaN
+            continue
+        if isinstance(item, (str, int, float, bool)):
+            out[str(key)] = item
+    return out
+
+
+def _transaction_dt(txn: dict) -> float | None:
+    """The transaction's own timestamp, used to place a feedback row on
+    the correct side of the chronological train/test split. None for a
+    custom transaction that never had one."""
+    value = txn.get("TransactionDT")
+    if value is None:
+        return None
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return None
+
+
 class ScoringService:
     """Scores a transaction and produces the decision that gates it.
 
@@ -148,6 +178,15 @@ class ScoringService:
                 "disposed_at": None,
                 "created_at": _now_iso(),
                 "notes": [],
+                # Kept so a disposed item can become a labelled training
+                # row (src/feedback_export.py). Without the features the
+                # model actually saw and the transaction's own timestamp,
+                # a reviewer's verdict is a label with nothing to attach
+                # it to, and can't be placed correctly relative to the
+                # chronological train/test boundary.
+                "transaction": _jsonable(txn),
+                "transaction_dt": _transaction_dt(txn),
+                "escalation_state": escalation_before.get("state"),
             })
 
         return {

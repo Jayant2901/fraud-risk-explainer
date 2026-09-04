@@ -510,6 +510,76 @@ risk-manager/
         └── App.tsx
 ```
 
+## The feedback loop, and why it is opt-in
+
+`review_queue.py` already captured `CONFIRMED_FRAUD` / `FALSE_POSITIVE`
+on exactly the transactions the model was least certain about — human
+labels on the hardest cases — and nothing consumed them.
+
+`GET /api/feedback/export` (and `src/feedback_export.py`) turns disposed
+items into a labelled dataset: the features the model actually saw, its
+score and action at the time, the escalation state, the reviewer's
+disposition, and the transaction's own timestamp. `write_file=true` also
+writes a CSV under `data/feedback/`.
+
+`python src/train_model.py --with-feedback` appends those rows to
+training. Three deliberate constraints:
+
+- **Off by default.** A plain `python src/train_model.py` reproduces
+  exactly the numbers this README reports.
+- **The chronological split is respected by transaction timestamp**, not
+  by when the reviewer clicked. A label whose transaction sits in the
+  test window is dropped, never trained on — otherwise the test set
+  leaks into the model and every number here inflates quietly.
+- **Feedback rows are weighted explicitly** (`--feedback-weight`,
+  default 1.0) and their count is written into `eval_report.txt`, so the
+  loop's influence is a number rather than an invisible drift.
+
+`python src/train_model.py --compare` trains both ways and prints the
+delta, because the interesting question is whether human labels actually
+helped.
+
+### The bias, stated plainly
+
+These labels exist **only for transactions the system flagged**. The
+model never gets ground truth on what it confidently allowed, so this is
+a censored sample: it over-represents the region near the decision
+boundary and contains no information about false negatives. It can
+improve calibration where reviewers looked; it says nothing about
+anywhere else. The caveat travels with the data — `GET
+/api/feedback/export` returns it in the response body.
+
+Retraining is also **never automatic**. Unsupervised retraining on a
+biased label sample is how production fraud models quietly degrade, so
+this stays a deliberate, inspected, manually-triggered operation.
+
+### A real run, measured
+
+Scored 24 transactions through the API, let 3 land in the review queue,
+disposed them (2 `CONFIRMED_FRAUD`, 1 `FALSE_POSITIVE`), exported, and
+ran `--compare` against 472,432 training rows / 118,108 test rows:
+
+```
+Feedback rows used:   3
+roc_auc                        0.9540 ->  0.9542  (+0.0003)
+average_precision              0.6748 ->  0.6761  (+0.0013)
+review_threshold               34.00  ->  32.00   (-2.00)
+block_threshold                71.00  ->  74.00   (+3.00)
+estimated_savings           421,850   -> 365,100   (-56,750, -13.5%)
+```
+
+Three rows against 472k moved ROC-AUC and PR-AUC by a fraction of a
+point — noise, not signal, exactly as expected at this sample size. The
+more interesting number is `estimated_savings`, which went *down*: the
+cost-optimal threshold search is sensitive to small shifts in the
+predicted-probability distribution near the boundary, and 3 new points
+right at that boundary nudged it to a threshold that scores worse on
+this particular test set. That is not evidence the feedback loop hurts
+the model — it is evidence that 3 labels are not enough to draw any
+conclusion in either direction, and this is why the loop reports its
+delta on every run rather than assuming more labels are strictly
+better.
+
 ## Online features: what the model is actually scored against
 
 `add_causal_entity_history` and `add_causal_device_graph_features`

@@ -1072,6 +1072,61 @@ class TestTransactionEventIngestion:
         assert r.status_code == 202
 
 
+class TestFeedbackExport:
+    def _disposed_item(self, client, auth_headers, disposition="CONFIRMED_FRAUD"):
+        """Score something that lands in the queue, then dispose it."""
+        r = client.post("/api/score", json={"entity_id": "entity-a", "txn_index": 0},
+                        headers=auth_headers)
+        verdict_id = r.json()["verdict_id"]
+        client.post(f"/api/review-queue/{verdict_id}/disposition",
+                    json={"disposition": disposition}, headers=auth_headers)
+        return verdict_id
+
+    def test_exports_disposed_items_as_labelled_rows(self, client, auth_headers):
+        verdict_id = self._disposed_item(client, auth_headers)
+
+        body = client.get("/api/feedback/export", headers=auth_headers).json()
+
+        assert body["count"] == 1
+        assert body["confirmed_fraud"] == 1
+        row = body["rows"][0]
+        assert row["verdict_id"] == verdict_id
+        assert row["isFraud"] == 1
+
+    def test_a_false_positive_is_labelled_zero(self, client, auth_headers):
+        self._disposed_item(client, auth_headers, "FALSE_POSITIVE")
+
+        body = client.get("/api/feedback/export", headers=auth_headers).json()
+
+        assert body["rows"][0]["isFraud"] == 0
+        assert body["false_positive"] == 1
+
+    def test_an_undisposed_item_is_not_a_label(self, client, auth_headers):
+        client.post("/api/score", json={"entity_id": "entity-a", "txn_index": 0},
+                    headers=auth_headers)
+
+        assert client.get("/api/feedback/export", headers=auth_headers).json()["count"] == 0
+
+    def test_the_response_carries_the_sampling_bias_caveat(self, client, auth_headers):
+        """These labels exist only for flagged transactions. The caveat
+        ships with the data rather than living only in a docstring."""
+        body = client.get("/api/feedback/export", headers=auth_headers).json()
+
+        assert "censored sample" in body["bias_warning"]
+
+    def test_exported_rows_carry_the_features_the_model_saw(self, client, auth_headers):
+        self._disposed_item(client, auth_headers)
+
+        row = client.get("/api/feedback/export", headers=auth_headers).json()["rows"][0]
+
+        # From the sample fixture's transaction.
+        assert row["TransactionAmt"] == 100.0
+        assert row["transaction_dt"] == 1000.0
+
+    def test_requires_an_api_key(self, client):
+        assert client.get("/api/feedback/export").status_code == 401
+
+
 class TestDeadLetterEndpoint:
     def test_lists_dead_lettered_events(self, client, auth_headers, monkeypatch):
         import api.main as main
