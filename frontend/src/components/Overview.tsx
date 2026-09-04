@@ -64,6 +64,13 @@ function ImpactBand({ headline, basis }: { headline: number; basis: string | nul
 export default function Overview() {
   const [cost, setCost] = useState<CostAnalysis | null>(null);
   const [entityCount, setEntityCount] = useState<number | null>(null);
+  // Distinct from "still loading" (entityCount === null, renders "—"):
+  // the historical sample dataset can genuinely be unavailable (see
+  // api/main.py's SAMPLE_DATA_MISSING_DETAIL) without anything else
+  // being broken — custom scoring never touches that dataset. A bare
+  // "—" reads as "no data yet" and looks like a bug once loading has
+  // clearly finished; this renders the real state instead.
+  const [entitiesUnavailable, setEntitiesUnavailable] = useState(false);
   const [demoScore, setDemoScore] = useState(DEFAULT_DEMO_SCORE);
 
   useEffect(() => {
@@ -77,7 +84,7 @@ export default function Overview() {
     api
       .listEntities()
       .then((d) => setEntityCount(d.entities.length))
-      .catch(() => {});
+      .catch(() => setEntitiesUnavailable(true));
   }, []);
 
   const thresholds = cost?.decision_thresholds ?? null;
@@ -143,8 +150,12 @@ export default function Overview() {
             </div>
             <div className={groupedRow}>
               <dt className={groupedRowLabel}>Scoring mode</dt>
-              <dd className={groupedRowValue}>
-                {entityCount === null ? "—" : `${entityCount} replayable + custom`}
+              <dd className={entitiesUnavailable ? `${typeScale.caption} text-right` : groupedRowValue}>
+                {entitiesUnavailable
+                  ? "Historical entities unavailable — custom scoring still works"
+                  : entityCount === null
+                  ? "—"
+                  : `${entityCount} replayable + custom`}
               </dd>
             </div>
             <div className={groupedRow}>

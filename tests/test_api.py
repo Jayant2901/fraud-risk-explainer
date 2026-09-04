@@ -8,6 +8,15 @@ LLM agent) — no trained model, no dataset, no GEMINI_API_KEY needed.
 # longer imports decide_action at all.
 from decision_rules import decide_action
 
+# Captured once, at collection time — before the `client` fixture's
+# per-test monkeypatch.setattr(main, "get_sample_data", lambda: sample_df)
+# replaces the module attribute. TestSampleDataUnavailable needs the REAL
+# lru_cache'd function (to exercise its actual FileNotFoundError -> 503
+# handling), which is otherwise unreachable once a test has patched it
+# away to the fake.
+import api.main as _main_module
+_real_get_sample_data = _main_module.get_sample_data
+
 
 class TestDecideAction:
     """
@@ -127,6 +136,79 @@ class TestHealth:
         body = client.get("/api/health").json()
 
         assert body["escalation_alerts"]["webhook_configured"] is False
+
+
+class TestSampleDataUnavailable:
+    """FIX-1: a fresh clone with no data/*.csv and no
+    models/sample_data_cache.pkl used to surface as an unhandled
+    FileNotFoundError -> raw 500 from every endpoint that calls
+    get_sample_data(). Exercises the REAL get_sample_data (restored via
+    _real_get_sample_data, captured before the client fixture patches it
+    away) with a cache path that doesn't exist and load_raw_data patched
+    to fail exactly like a missing CSV would."""
+
+    def _make_data_unavailable(self, monkeypatch, tmp_path):
+        monkeypatch.setattr(_main_module, "get_sample_data", _real_get_sample_data)
+        _real_get_sample_data.cache_clear()
+        monkeypatch.setattr(_main_module, "SAMPLE_DATA_CACHE_PATH", str(tmp_path / "does_not_exist.pkl"))
+
+        def raise_file_not_found():
+            raise FileNotFoundError("data/train_transaction.csv")
+
+        monkeypatch.setattr(_main_module, "load_raw_data", raise_file_not_found)
+
+    def test_list_entities_returns_503_with_an_actionable_message(self, client, auth_headers, monkeypatch, tmp_path):
+        self._make_data_unavailable(monkeypatch, tmp_path)
+
+        r = client.get("/api/entities", headers=auth_headers)
+
+        assert r.status_code == 503
+        assert "python src/download_data.py" in r.json()["detail"]
+        assert "/api/score-custom" in r.json()["detail"]
+
+    def test_list_transactions_returns_503(self, client, auth_headers, monkeypatch, tmp_path):
+        self._make_data_unavailable(monkeypatch, tmp_path)
+
+        r = client.get("/api/entities/entity-a/transactions", headers=auth_headers)
+
+        assert r.status_code == 503
+
+    def test_score_returns_503(self, client, auth_headers, monkeypatch, tmp_path):
+        self._make_data_unavailable(monkeypatch, tmp_path)
+
+        r = client.post("/api/score", json={"entity_id": "entity-a", "txn_index": 0}, headers=auth_headers)
+
+        assert r.status_code == 503
+
+    def test_score_custom_is_unaffected(self, client, auth_headers, monkeypatch, tmp_path):
+        # The whole point of the actionable message: score-custom doesn't
+        # touch get_sample_data() at all, so it must keep working.
+        self._make_data_unavailable(monkeypatch, tmp_path)
+
+        r = client.post("/api/score-custom", json={"TransactionAmt": 100.0}, headers=auth_headers)
+
+        assert r.status_code == 200
+
+    def test_recovers_on_the_next_call_once_data_appears(self, client, auth_headers, monkeypatch, tmp_path):
+        # lru_cache does not cache a raised exception -- once the
+        # underlying data shows up, the very next call should succeed
+        # with no server restart needed.
+        self._make_data_unavailable(monkeypatch, tmp_path)
+        first = client.get("/api/entities", headers=auth_headers)
+        assert first.status_code == 503
+
+        monkeypatch.setattr(_main_module, "load_raw_data", lambda: None)  # unused once cache hits
+        import pandas as pd
+        sample = pd.DataFrame({
+            "entity_id": ["entity-a"], "TransactionAmt": [10.0], "TransactionDT": [1000],
+            "ProductCD": ["W"],
+        })
+        cache_path = _main_module.SAMPLE_DATA_CACHE_PATH
+        sample.to_pickle(cache_path)
+
+        second = client.get("/api/entities", headers=auth_headers)
+        assert second.status_code == 200
+        assert second.json()["entities"] == ["entity-a"]
 
 
 class TestListEntities:

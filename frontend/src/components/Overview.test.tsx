@@ -100,7 +100,24 @@ describe("Overview at-a-glance panel", () => {
     render(<Overview />);
 
     expect(await screen.findByText(/At a glance/)).toBeInTheDocument();
-    expect(screen.getAllByText("—")).toHaveLength(4);
+    // Decision thresholds, escalation cutoffs, ROC-AUC: still genuinely
+    // unknown, so still a dash. Scoring mode is different — a failed
+    // listEntities means "historical entities unavailable," a real,
+    // explicit state (FIX-1), not the same "nothing loaded yet" dash.
+    expect(screen.getAllByText("—")).toHaveLength(3);
+    expect(screen.getByText(/Historical entities unavailable/)).toBeInTheDocument();
+    expect(screen.getByText(/custom scoring still works/)).toBeInTheDocument();
+  });
+
+  it("shows a dash for scoring mode while entities are still loading, not the unavailable message", async () => {
+    mockedApi.costAnalysis.mockResolvedValue(COST);
+    mockedApi.listEntities.mockReturnValue(new Promise(() => {})); // never resolves
+
+    render(<Overview />);
+
+    await screen.findByText("34 / 71");
+    expect(screen.getByText("—")).toBeInTheDocument();
+    expect(screen.queryByText(/Historical entities unavailable/)).not.toBeInTheDocument();
   });
 
   it("renders a dash for ROC-AUC when the model hasn't recorded one", async () => {

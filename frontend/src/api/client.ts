@@ -254,6 +254,25 @@ const BASE = "/api";
 // server time, so this is baked in per-environment, not runtime-secret.
 const API_KEY = import.meta.env.VITE_API_KEY;
 
+// FastAPI's HTTPException error body is {"detail": "..."} — a message
+// written to be shown to a person (see e.g. api/main.py's
+// SAMPLE_DATA_MISSING_DETAIL). ApiError carries that message on its own
+// `detail` field so a caller can render it directly instead of the
+// generic "{status} {statusText}: {raw body}" string, which is
+// unreadable noise for an error that already has a human-written
+// explanation attached.
+export class ApiError extends Error {
+  status: number;
+  detail: string;
+
+  constructor(status: number, detail: string) {
+    super(detail);
+    this.name = "ApiError";
+    this.status = status;
+    this.detail = detail;
+  }
+}
+
 async function request<T>(path: string, init?: RequestInit): Promise<T> {
   const res = await fetch(`${BASE}${path}`, {
     ...init,
@@ -265,7 +284,15 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
   });
   if (!res.ok) {
     const body = await res.text().catch(() => "");
-    throw new Error(`${res.status} ${res.statusText}: ${body}`);
+    let detail = "";
+    try {
+      const parsed = JSON.parse(body);
+      if (parsed && typeof parsed.detail === "string") detail = parsed.detail;
+    } catch {
+      // Not a {"detail": "..."} JSON body — fall through to the raw text.
+    }
+    if (!detail) detail = body || `${res.status} ${res.statusText}`;
+    throw new ApiError(res.status, detail);
   }
   return res.json();
 }

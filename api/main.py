@@ -356,6 +356,13 @@ def get_agent() -> RiskExplainerAgent:
 SAMPLE_DATA_CACHE_PATH = "models/sample_data_cache.pkl"
 
 
+SAMPLE_DATA_MISSING_DETAIL = (
+    "Historical sample data not found. Run 'python src/download_data.py' "
+    "(and restart the API) to populate data/, or use POST /api/score-custom, "
+    "which doesn't require it."
+)
+
+
 @lru_cache(maxsize=1)
 def get_sample_data():
     # Only ~30 entities' worth of rows ever get served to the frontend, but
@@ -367,10 +374,21 @@ def get_sample_data():
     # waiting). Caching the small final slice to disk fixes that: delete
     # models/sample_data_cache.pkl if you ever regenerate data/ and need a
     # fresh sample.
+    #
+    # A missing data/*.csv (fresh clone, download_data.py never run) used
+    # to surface as an unhandled FileNotFoundError -> raw 500 from every
+    # endpoint below that calls this. Translated once, here, into a clean
+    # 503 with an actionable message — the one central place, since every
+    # affected endpoint already calls this function. lru_cache does not
+    # cache a raised exception, so this is re-checked (and can succeed)
+    # on the very next call once the data shows up, no restart required.
     if os.path.exists(SAMPLE_DATA_CACHE_PATH):
         return pd.read_pickle(SAMPLE_DATA_CACHE_PATH)
 
-    df = load_raw_data()
+    try:
+        df = load_raw_data()
+    except FileNotFoundError as e:
+        raise HTTPException(status_code=503, detail=SAMPLE_DATA_MISSING_DETAIL) from e
     df = engineer_features(df)
     counts = df["entity_id"].value_counts()
     active_entities = counts[counts >= 5].index[:30]

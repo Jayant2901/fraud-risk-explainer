@@ -2,21 +2,28 @@ import { act, cleanup, fireEvent, render, screen, waitFor } from "@testing-libra
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import LiveScoring from "./LiveScoring";
-import { api } from "../api/client";
+import { ApiError, api } from "../api/client";
 
-vi.mock("../api/client", () => ({
-  api: {
-    listEntities: vi.fn(),
-    listTransactions: vi.fn(),
-    getEscalation: vi.fn(),
-    resetEntity: vi.fn(),
-    score: vi.fn(),
-    scoreCustom: vi.fn(),
-    getExplanation: vi.fn(),
-    costAnalysis: vi.fn(),
-    streamVerdict: vi.fn(),
-  },
-}));
+vi.mock("../api/client", async () => {
+  const actual = await vi.importActual<typeof import("../api/client")>("../api/client");
+  return {
+    // The real ApiError class, not a stub: LiveScoring.tsx does
+    // `e instanceof ApiError`, which needs the identity of the actual
+    // class the component imports to line up with what tests throw.
+    ApiError: actual.ApiError,
+    api: {
+      listEntities: vi.fn(),
+      listTransactions: vi.fn(),
+      getEscalation: vi.fn(),
+      resetEntity: vi.fn(),
+      score: vi.fn(),
+      scoreCustom: vi.fn(),
+      getExplanation: vi.fn(),
+      costAnalysis: vi.fn(),
+      streamVerdict: vi.fn(),
+    },
+  };
+});
 
 const mockedApi = vi.mocked(api);
 
@@ -146,6 +153,26 @@ describe("LiveScoring", () => {
     render(<LiveScoring />);
 
     expect(await screen.findByText(/network down/i)).toBeInTheDocument();
+  });
+
+  it("shows an ApiError's detail message directly, not the generic thrown-error string", async () => {
+    // FIX-1: a 503 for the missing historical dataset used to render as
+    // "Error: 503 Service Unavailable: {...}" — the raw thrown-error
+    // string. It should show the backend's own actionable message
+    // as-is instead.
+    mockHappyPathApis();
+    mockedApi.listEntities.mockRejectedValue(
+      new ApiError(
+        503,
+        "Historical sample data not found. Run 'python src/download_data.py' (and restart the API) " +
+          "to populate data/, or use POST /api/score-custom, which doesn't require it."
+      )
+    );
+
+    render(<LiveScoring />);
+
+    expect(await screen.findByText(/Historical sample data not found/i)).toBeInTheDocument();
+    expect(screen.queryByText(/503 Service Unavailable/i)).not.toBeInTheDocument();
   });
 
   describe("custom transaction mode", () => {

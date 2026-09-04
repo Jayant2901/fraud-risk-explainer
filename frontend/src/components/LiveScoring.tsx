@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useState } from "react";
-import { api, type EscalationState, type ExplanationResult, type ScoreResult, type TxnSummary, type Verdict } from "../api/client";
+import { ApiError, api, type EscalationState, type ExplanationResult, type ScoreResult, type TxnSummary, type Verdict } from "../api/client";
 import { AlertTriangleIcon } from "./icons";
 import RiskGauge from "./RiskGauge";
 import { useAnimatedNumber } from "../hooks";
@@ -79,6 +79,15 @@ function playIntervalMs(speed: PlaySpeed): number {
   return Math.max(PLAY_MIN_INTERVAL_MS, PLAY_BASE_INTERVAL_MS / speed);
 }
 
+// ApiError.detail is already the backend's human-written explanation
+// (FastAPI's {"detail": "..."} body — see api/main.py's
+// SAMPLE_DATA_MISSING_DETAIL for the case this exists for). Showing it
+// directly beats the generic thrown-error string, which for an ApiError
+// would otherwise read as "ApiError: <that same message>".
+function describeError(e: unknown): string {
+  return e instanceof ApiError ? e.detail : String(e);
+}
+
 // A plausible legitimate-looking transaction, pre-filled so the custom
 // form is immediately submittable rather than starting blank.
 const DEFAULT_CUSTOM_FORM = {
@@ -153,7 +162,7 @@ export default function LiveScoring() {
         setEntities(d.entities);
         if (d.entities.length) setSelectedEntity(d.entities[0]);
       })
-      .catch((e) => setError(String(e)))
+      .catch((e) => setError(describeError(e)))
       .finally(() => setLoadingEntities(false));
   }, []);
 
@@ -171,7 +180,7 @@ export default function LiveScoring() {
         setTxns(t.transactions);
         setEscalation(esc);
       })
-      .catch((e) => setError(String(e)))
+      .catch((e) => setError(describeError(e)))
       .finally(() => setLoadingTxns(false));
   }, [selectedEntity]);
 
@@ -277,7 +286,7 @@ export default function LiveScoring() {
       const esc = await api.getEscalation(selectedEntity);
       setEscalation(esc);
     } catch (e) {
-      setError(String(e));
+      setError(describeError(e));
     } finally {
       setScoring(false);
     }
@@ -337,7 +346,7 @@ export default function LiveScoring() {
         setEscalation(r.escalation_before);
       }
     } catch (e) {
-      setError(String(e));
+      setError(describeError(e));
     } finally {
       setScoring(false);
     }
