@@ -208,3 +208,101 @@ class TestRiskExplainerAgentExplain(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+def make_streaming_client(chunks=None, raises=None):
+    """Mocks generate_content_stream, which yields chunk objects carrying
+    a .text fragment — the shape the real SDK returns."""
+    client = MagicMock()
+    if raises is not None:
+        client.models.generate_content_stream.side_effect = raises
+    else:
+        client.models.generate_content_stream.return_value = [
+            MagicMock(text=chunk) for chunk in (chunks or [])
+        ]
+    return client
+
+
+VALID_VERDICT_JSON = (
+    '{"explanation": "Three prior blocked attempts on this card today.", '
+    '"action": "BLOCK", "escalated_due_to_history": true, '
+    '"rationale": "Repeat velocity from one fingerprint."}'
+)
+
+
+class TestExplainStream(unittest.TestCase):
+    def test_yields_deltas_then_one_terminal_complete(self):
+        # Split mid-token, the way a real stream arrives.
+        chunks = [VALID_VERDICT_JSON[:30], VALID_VERDICT_JSON[30:80], VALID_VERDICT_JSON[80:]]
+        agent = RiskExplainerAgent(client=make_streaming_client(chunks))
+
+        messages = list(agent.explain_stream(85.0, TOP_FACTORS))
+
+        assert [m["type"] for m in messages[:-1]] == ["delta", "delta", "delta"]
+        assert messages[-1]["type"] == "complete"
+        assert "".join(m["text"] for m in messages[:-1]) == VALID_VERDICT_JSON
+
+    def test_accumulates_to_the_same_verdict_explain_returns(self):
+        """The anti-drift assertion: batch and streamed paths must agree
+        on the finished object for an identical model response."""
+        parsed = RiskVerdict.model_validate_json(VALID_VERDICT_JSON)
+        batch_agent = RiskExplainerAgent(client=make_client(parsed=parsed))
+        stream_agent = RiskExplainerAgent(client=make_streaming_client([VALID_VERDICT_JSON]))
+
+        batch_verdict = batch_agent.explain(85.0, TOP_FACTORS)
+        streamed = list(stream_agent.explain_stream(85.0, TOP_FACTORS))[-1]["verdict"]
+
+        assert streamed == batch_verdict
+
+    def test_malformed_streamed_json_degrades_to_the_invalid_format_fallback(self):
+        agent = RiskExplainerAgent(client=make_streaming_client(["{not json at all"]))
+
+        verdict = list(agent.explain_stream(85.0, TOP_FACTORS))[-1]["verdict"]
+
+        assert verdict["action"] == "REVIEW"
+        assert "didn't match the expected format" in verdict["explanation"]
+
+    def test_valid_json_that_fails_schema_validation_also_falls_back(self):
+        # Well-formed JSON, empty explanation — rejected by _is_valid_response.
+        agent = RiskExplainerAgent(client=make_streaming_client([
+            '{"explanation": "", "action": "BLOCK", '
+            '"escalated_due_to_history": false, "rationale": "x"}'
+        ]))
+
+        verdict = list(agent.explain_stream(85.0, TOP_FACTORS))[-1]["verdict"]
+
+        assert "didn't match the expected format" in verdict["explanation"]
+
+    def test_a_rate_limited_stream_returns_the_same_fallback_as_the_batch_path(self):
+        raises = _client_error(429, "quota exceeded")
+        stream_agent = RiskExplainerAgent(client=make_streaming_client(raises=raises))
+        batch_agent = RiskExplainerAgent(client=make_client(raises=raises))
+
+        streamed = list(stream_agent.explain_stream(85.0, TOP_FACTORS))[-1]["verdict"]
+
+        assert streamed == batch_agent.explain(85.0, TOP_FACTORS)
+        assert "rate limit" in streamed["explanation"].lower()
+
+    def test_a_missing_api_key_returns_the_unauthenticated_fallback(self):
+        agent = RiskExplainerAgent(client=make_streaming_client(raises=ValueError("no key")))
+
+        verdict = list(agent.explain_stream(85.0, TOP_FACTORS))[-1]["verdict"]
+
+        assert "GEMINI_API_KEY" in verdict["explanation"]
+
+    def test_a_failure_still_produces_exactly_one_terminal_event(self):
+        agent = RiskExplainerAgent(client=make_streaming_client(raises=RuntimeError("boom")))
+
+        messages = list(agent.explain_stream(85.0, TOP_FACTORS))
+
+        assert len(messages) == 1
+        assert messages[0]["type"] == "complete"
+
+    def test_empty_chunks_are_not_emitted_as_deltas(self):
+        agent = RiskExplainerAgent(
+            client=make_streaming_client(["", None, VALID_VERDICT_JSON])
+        )
+
+        messages = list(agent.explain_stream(85.0, TOP_FACTORS))
+
+        assert [m["type"] for m in messages] == ["delta", "complete"]

@@ -1,4 +1,4 @@
-import { act, fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { act, cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import LiveScoring from "./LiveScoring";
@@ -14,10 +14,42 @@ vi.mock("../api/client", () => ({
     scoreCustom: vi.fn(),
     getExplanation: vi.fn(),
     costAnalysis: vi.fn(),
+    streamVerdict: vi.fn(),
   },
 }));
 
 const mockedApi = vi.mocked(api);
+
+// jsdom has no EventSource. This stands in for one: `emit` delivers a
+// named server event with a JSON payload (what the real endpoint sends),
+// and `emitTransportError` fires a data-less error, which is how a
+// dropped connection surfaces — the component distinguishes the two.
+class FakeEventSource {
+  listeners: Record<string, ((event: MessageEvent) => void)[]> = {};
+  closed = false;
+
+  addEventListener(name: string, handler: (event: MessageEvent) => void) {
+    (this.listeners[name] ||= []).push(handler);
+  }
+
+  emit(name: string, payload: unknown) {
+    for (const handler of this.listeners[name] ?? []) {
+      handler(new MessageEvent(name, { data: JSON.stringify(payload) }));
+    }
+  }
+
+  emitTransportError() {
+    for (const handler of this.listeners.error ?? []) {
+      handler(new MessageEvent("error"));
+    }
+  }
+
+  close() {
+    this.closed = true;
+  }
+}
+
+let currentSource: FakeEventSource | null = null;
 
 // The gauge's score arrival and the explanation typewriter are motion.
 // This suite asserts on settled content, so it runs as a reduced-motion
@@ -38,6 +70,10 @@ function mockReducedMotion() {
 
 function mockHappyPathApis() {
   mockReducedMotion();
+  mockedApi.streamVerdict.mockImplementation(() => {
+    currentSource = new FakeEventSource();
+    return currentSource as unknown as EventSource;
+  });
   mockedApi.costAnalysis.mockResolvedValue({
     eval_report: null,
     defaults: { avg_fraud_loss: 5000, avg_fp_cost: 150 },
@@ -375,35 +411,149 @@ describe("LiveScoring", () => {
       expect(screen.queryByText("34")).not.toBeInTheDocument();
     });
 
-    it("reveals the full explanation and rationale once they arrive", async () => {
-      mockScoredResult();
-      mockedApi.getExplanation.mockResolvedValue({
-        status: "ready",
-        verdict: {
-          explanation: "This card has three prior blocked attempts today.",
-          action: "BLOCK",
-          escalated_due_to_history: true,
-          rationale: "Repeat velocity from one fingerprint.",
-        },
-      });
-
-      await scoreOnce();
-
-      // Under reduced motion both land complete and untruncated.
-      expect(
-        await screen.findByText("This card has three prior blocked attempts today.")
-      ).toBeInTheDocument();
-      expect(
-        await screen.findByText(/Repeat velocity from one fingerprint\./)
-      ).toBeInTheDocument();
-    });
-
-    it("keeps the pending state until the explanation is ready", async () => {
+    it("keeps the pending state until the first delta arrives", async () => {
       mockScoredResult();
 
       await scoreOnce();
 
       expect(await screen.findByText(/Generating explanation/i)).toBeInTheDocument();
+    });
+  });
+
+  describe("explanation streaming over SSE", () => {
+    beforeEach(() => {
+      vi.clearAllMocks();
+    });
+
+    function mockScoredResult() {
+      mockHappyPathApis();
+      mockedApi.score.mockResolvedValue({
+        risk_score: 55,
+        above_threshold: true,
+        top_factors: [],
+        escalation_before: {
+          state: "NORMAL",
+          recent_verdict_count: 0,
+          recent_risky_count: 0,
+          recent_verdicts: [],
+        },
+        decision: { action: "REVIEW", escalated_due_to_history: false },
+        verdict_id: "v-stream",
+      });
+      mockedApi.getExplanation.mockResolvedValue({ status: "pending" });
+    }
+
+    async function scoreOnce() {
+      render(<LiveScoring />);
+      await screen.findByRole("option", { name: "entity-a" });
+      const button = screen.getByRole("button", { name: /Score this transaction/i });
+      await waitFor(() => expect(button).toBeEnabled());
+      fireEvent.click(button);
+      await waitFor(() => expect(mockedApi.score).toHaveBeenCalled());
+      await waitFor(() => expect(mockedApi.streamVerdict).toHaveBeenCalledWith("v-stream"));
+      return currentSource!;
+    }
+
+    it("subscribes to the verdict stream instead of polling", async () => {
+      mockScoredResult();
+
+      await scoreOnce();
+
+      expect(mockedApi.streamVerdict).toHaveBeenCalledTimes(1);
+      expect(mockedApi.getExplanation).not.toHaveBeenCalled();
+    });
+
+    it("renders delta text incrementally as it arrives", async () => {
+      mockScoredResult();
+      const source = await scoreOnce();
+
+      await act(async () => {
+        source.emit("explanation_delta", { text: '{"explanation": "The card ' });
+      });
+      expect(screen.getByText(/The card/)).toBeInTheDocument();
+
+      await act(async () => {
+        source.emit("explanation_delta", { text: "has three prior blocks." });
+      });
+      expect(screen.getByText(/The card has three prior blocks\./)).toBeInTheDocument();
+    });
+
+    it("replaces the streamed text with the validated verdict on completion", async () => {
+      mockScoredResult();
+      const source = await scoreOnce();
+
+      await act(async () => {
+        source.emit("explanation_delta", { text: '{"explanation": "partial' });
+        source.emit("explanation_complete", {
+          explanation: "This card has three prior blocked attempts today.",
+          action: "BLOCK",
+          escalated_due_to_history: true,
+          rationale: "Repeat velocity from one fingerprint.",
+        });
+      });
+
+      expect(
+        screen.getByText("This card has three prior blocked attempts today.")
+      ).toBeInTheDocument();
+      expect(screen.getByText(/Repeat velocity from one fingerprint\./)).toBeInTheDocument();
+      expect(screen.queryByText(/partial/)).not.toBeInTheDocument();
+      expect(source.closed).toBe(true);
+    });
+
+    it("renders a terminal error event's fallback verdict", async () => {
+      mockScoredResult();
+      const source = await scoreOnce();
+
+      await act(async () => {
+        source.emit("error", {
+          explanation: "The Gemini API's free-tier rate limit was hit.",
+          action: "REVIEW",
+          escalated_due_to_history: false,
+          rationale: "Falling back to manual review — explainer agent rate-limited.",
+        });
+      });
+
+      expect(screen.getByText(/free-tier rate limit was hit/)).toBeInTheDocument();
+    });
+
+    it("retries the connection once, then falls back to polling", async () => {
+      mockScoredResult();
+      mockedApi.getExplanation.mockResolvedValue({
+        status: "ready",
+        verdict: {
+          explanation: "Delivered by the polling fallback.",
+          action: "REVIEW",
+          escalated_due_to_history: false,
+          rationale: "r",
+        },
+      });
+      const first = await scoreOnce();
+
+      // A transport failure carries no data — distinct from the named
+      // terminal "error" event above.
+      await act(async () => first.emitTransportError());
+      await waitFor(() => expect(mockedApi.streamVerdict).toHaveBeenCalledTimes(2));
+
+      // Second failure: stop retrying and use the polling endpoint.
+      await act(async () => currentSource!.emitTransportError());
+
+      expect(
+        await screen.findByText("Delivered by the polling fallback.")
+      ).toBeInTheDocument();
+    });
+
+    it("closes the connection when the component unmounts", async () => {
+      mockScoredResult();
+      render(<LiveScoring />);
+      await screen.findByRole("option", { name: "entity-a" });
+      const button = screen.getByRole("button", { name: /Score this transaction/i });
+      await waitFor(() => expect(button).toBeEnabled());
+      fireEvent.click(button);
+      await waitFor(() => expect(mockedApi.streamVerdict).toHaveBeenCalled());
+
+      cleanup();
+
+      expect(currentSource!.closed).toBe(true);
     });
   });
 });

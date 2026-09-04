@@ -720,6 +720,192 @@ class TestCostAnalysis:
         assert r.json()["roc_auc"] is None
 
 
+class TestVerdictStream:
+    """GET /api/verdicts/{verdict_id}/stream — SSE.
+
+    Parsed loosely (event: / data: lines) rather than with an SSE client,
+    so these assert the wire format the browser's EventSource actually
+    consumes.
+    """
+
+    def _events(self, raw: str) -> list[tuple[str, dict]]:
+        import json as _json
+
+        out = []
+        for block in raw.split("\n\n"):
+            name = data = None
+            for line in block.splitlines():
+                if line.startswith("event: "):
+                    name = line[len("event: "):]
+                elif line.startswith("data: "):
+                    data = _json.loads(line[len("data: "):])
+            if name is not None:
+                out.append((name, data))
+        return out
+
+    def test_unknown_verdict_id_is_404(self, client, auth_headers):
+        r = client.get("/api/verdicts/nope/stream", headers=auth_headers)
+        assert r.status_code == 404
+
+    def test_requires_an_api_key(self, client):
+        assert client.get("/api/verdicts/any/stream").status_code == 401
+
+    def test_accepts_the_key_as_a_query_parameter_for_eventsource(self, client):
+        """EventSource cannot set headers, so this one endpoint also takes
+        the key as a query param — see verify_api_key_or_query."""
+        import api.main as main
+        from conftest import TEST_API_KEY
+
+        main._explanations_cache.put("v-q", {"status": "ready", "verdict": {"action": "ALLOW"}})
+
+        r = client.get(f"/api/verdicts/v-q/stream?api_key={TEST_API_KEY}")
+
+        assert r.status_code == 200
+
+    def test_rejects_a_wrong_key_in_the_query_parameter(self, client):
+        assert client.get("/api/verdicts/any/stream?api_key=wrong").status_code == 401
+
+    def _publish_after_connect(self, main, verdict_id, messages):
+        """Publish once the SSE handler has subscribed.
+
+        Pub/sub has no retention, so publishing before the subscriber
+        attaches would drop the messages — which is exactly the real
+        ordering too: the client connects, then the model produces text.
+        """
+        import threading
+        import time
+
+        def publish():
+            time.sleep(0.2)
+            for message in messages:
+                main._explanation_bus.publish(verdict_id, message)
+
+        thread = threading.Thread(target=publish, daemon=True)
+        thread.start()
+        return thread
+
+    def test_emits_decision_before_any_explanation_event(self, client, auth_headers):
+        import api.main as main
+
+        main._explanations_cache.put("v-pending", {"status": "pending"})
+        self._publish_after_connect(main, "v-pending", [
+            {"type": "delta", "text": "Because "},
+            {"type": "complete", "verdict": {"action": "REVIEW"}},
+        ])
+
+        r = client.get("/api/verdicts/v-pending/stream", headers=auth_headers)
+
+        events = self._events(r.text)
+        assert events[0][0] == "decision"
+        assert [name for name, _ in events] == [
+            "decision",
+            "explanation_delta",
+            "explanation_complete",
+        ]
+
+    def test_deltas_carry_the_incremental_text(self, client, auth_headers):
+        import api.main as main
+
+        main._explanations_cache.put("v-deltas", {"status": "pending"})
+        self._publish_after_connect(main, "v-deltas", [
+            {"type": "delta", "text": "The card "},
+            {"type": "delta", "text": "has three "},
+            {"type": "delta", "text": "prior blocks."},
+            {"type": "complete", "verdict": {"action": "BLOCK"}},
+        ])
+
+        r = client.get("/api/verdicts/v-deltas/stream", headers=auth_headers)
+
+        events = self._events(r.text)
+        text = "".join(d["text"] for name, d in events if name == "explanation_delta")
+        assert text == "The card has three prior blocks."
+
+    def test_a_verdict_that_completes_while_connected_still_terminates(self, client, auth_headers, monkeypatch):
+        """Pub/sub has no retention: if the verdict lands in the window
+        between the handler's cache check and its subscription, the client
+        would hang forever. The idle tick re-reads the cache to close that
+        race."""
+        import api.main as main
+        import explanation_bus
+
+        monkeypatch.setattr(explanation_bus, "POLL_TIMEOUT_SECONDS", 0.05)
+        main._explanations_cache.put("v-raced", {"status": "pending"})
+        # Written directly to the cache — no message is ever published.
+        verdict = {"explanation": "raced", "action": "ALLOW",
+                   "escalated_due_to_history": False, "rationale": "r"}
+        main._explanations_cache.put("v-raced", {"status": "ready", "verdict": verdict})
+
+        r = client.get("/api/verdicts/v-raced/stream", headers=auth_headers)
+
+        events = self._events(r.text)
+        assert events[-1] == ("explanation_complete", verdict)
+
+    def test_a_stream_whose_producer_died_closes_with_a_terminal_error(self, client, auth_headers, monkeypatch):
+        import api.main as main
+        import explanation_bus
+
+        monkeypatch.setattr(explanation_bus, "POLL_TIMEOUT_SECONDS", 0.01)
+        monkeypatch.setattr(main, "STREAM_MAX_IDLE_TICKS", 2)
+        main._explanations_cache.put("v-orphan", {"status": "pending"})
+
+        r = client.get("/api/verdicts/v-orphan/stream", headers=auth_headers)
+
+        events = self._events(r.text)
+        assert events[-1][0] == "error"
+        assert events[-1][1]["action"] == "REVIEW"
+        assert ": keepalive" in r.text
+
+    def test_an_already_finished_verdict_replays_its_terminal_event(self, client, auth_headers):
+        """A client reconnecting after the explanation landed must not
+        hang waiting for deltas that will never come again."""
+        import api.main as main
+
+        verdict = {
+            "explanation": "done",
+            "action": "ALLOW",
+            "escalated_due_to_history": False,
+            "rationale": "r",
+        }
+        main._explanations_cache.put("v-done", {"status": "ready", "verdict": verdict})
+
+        r = client.get("/api/verdicts/v-done/stream", headers=auth_headers)
+
+        events = self._events(r.text)
+        assert [name for name, _ in events] == ["decision", "explanation_complete"]
+        assert events[-1][1] == verdict
+
+    def test_the_completed_verdict_matches_the_polling_endpoints_payload(self, client, auth_headers):
+        """SSE and the polling fallback must deliver the same object —
+        the polling endpoint stays as the transport for proxied clients."""
+        import api.main as main
+
+        verdict = {
+            "explanation": "same",
+            "action": "REVIEW",
+            "escalated_due_to_history": True,
+            "rationale": "r",
+        }
+        main._explanations_cache.put("v-same", {"status": "ready", "verdict": verdict})
+
+        streamed = self._events(
+            client.get("/api/verdicts/v-same/stream", headers=auth_headers).text
+        )[-1][1]
+        polled = client.get("/api/explanations/v-same", headers=auth_headers).json()
+
+        assert streamed == polled["verdict"]
+
+    def test_declares_the_event_stream_content_type(self, client, auth_headers):
+        import api.main as main
+
+        main._explanations_cache.put("v-ct", {"status": "ready", "verdict": {"action": "ALLOW"}})
+
+        r = client.get("/api/verdicts/v-ct/stream", headers=auth_headers)
+
+        assert r.headers["content-type"].startswith("text/event-stream")
+        # Nginx would otherwise buffer the whole stream to completion.
+        assert r.headers["x-accel-buffering"] == "no"
+
+
 class TestTransactionEventIngestion:
     """POST /api/events/transaction — the webhook-shaped entry point.
 

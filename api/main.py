@@ -40,6 +40,7 @@ from functools import lru_cache
 import pandas as pd
 from fastapi import BackgroundTasks, Depends, FastAPI, Header, HTTPException, Request, Security
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import StreamingResponse
 from fastapi.routing import APIRouter
 from fastapi.security import APIKeyHeader
 from prometheus_fastapi_instrumentator import Instrumentator
@@ -63,7 +64,8 @@ from review_queue import create_review_queue, UnknownVerdictError, AlreadyDispos
 from data_utils import load_raw_data, engineer_features
 from cost_analysis import cost_curve, DEFAULT_AVG_FRAUD_LOSS, DEFAULT_AVG_FP_COST
 from impact_summary import extrapolate_monthly_savings
-from scoring_service import ScoringService, generate_explanation
+from scoring_service import FALLBACK_VERDICT, ScoringService, generate_explanation
+from explanation_bus import ExplanationBus
 import event_stream
 
 configure_logging()
@@ -181,13 +183,41 @@ _idempotency_cache = KeyedCache(_redis_client, prefix="riskmgr:idempotency", ttl
 # src/review_queue.py.
 _review_queue = create_review_queue(_redis_client)
 
+# Carries explanation deltas from the worker running the LLM call to the
+# worker holding the client's SSE connection — see src/explanation_bus.py.
+_explanation_bus = ExplanationBus(_redis_client)
+
 
 def _generate_explanation(verdict_id: str, risk_score: float, top_factors: list, escalation: dict):
-    """Background task; delegates to the shared implementation so the
-    stream consumer produces identical explanations and fallbacks."""
+    """Background task. Streams the LLM response, publishing each delta to
+    subscribers of GET /api/verdicts/{verdict_id}/stream, and writes the
+    finished verdict into the same cache
+    GET /api/explanations/{verdict_id} has always served — so a client on
+    either transport ends up with the identical result.
+
+    Falls back to the batch path if streaming itself fails, so an SDK or
+    transport problem degrades to today's behavior rather than leaving a
+    verdict with no explanation at all.
+    """
+    try:
+        verdict = None
+        for message in get_agent().explain_stream(risk_score, top_factors, escalation):
+            _explanation_bus.publish(verdict_id, message)
+            if message["type"] == "complete":
+                verdict = message["verdict"]
+        if verdict is not None:
+            _explanations_cache.put(verdict_id, {"status": "ready", "verdict": verdict})
+            return
+        logger.warning("Explanation stream ended with no verdict", extra={"verdict_id": verdict_id})
+    except Exception:
+        logger.exception("Streaming explanation failed; using batch path", extra={"verdict_id": verdict_id})
+
     generate_explanation(
         get_agent, _explanations_cache, verdict_id, risk_score, top_factors, escalation
     )
+    ready = _explanations_cache.get(verdict_id) or {}
+    if ready.get("status") == "ready":
+        _explanation_bus.publish(verdict_id, {"type": "complete", "verdict": ready["verdict"]})
 
 
 def _score_response(scored: dict) -> dict:
@@ -519,6 +549,130 @@ def score_custom(
     )
 
     return _score_response(scored)
+
+
+# An explanation stream that has produced nothing for this many idle
+# ticks (see explanation_bus.POLL_TIMEOUT_SECONDS) is assumed dead — the
+# worker running the LLM call crashed, or the verdict was never generated
+# — and is closed with a terminal error rather than held open forever.
+# 8 x 15s = two minutes, comfortably longer than any LLM call this
+# project makes (see RT-3's LLM_TIMEOUT_SECONDS).
+STREAM_MAX_IDLE_TICKS = 8
+
+
+def _sse(event: str, data: dict) -> str:
+    return f"event: {event}\ndata: {json.dumps(data)}\n\n"
+
+
+def verify_api_key_or_query(
+    provided_key: str | None = Security(_api_key_header),
+    api_key: str | None = None,
+) -> None:
+    """Auth for the SSE route only.
+
+    The browser's EventSource cannot set request headers, so it has no way
+    to send X-API-Key. This accepts the key as a query parameter as well —
+    narrowly, on this one read-only endpoint, rather than weakening
+    verify_api_key for every route.
+
+    The tradeoff is real: query strings are likelier to end up in access
+    logs and proxy logs than headers are. It is accepted here because this
+    endpoint is read-only, returns nothing that isn't already available
+    from GET /api/explanations/{id}, and the alternative (hand-rolling SSE
+    parsing over fetch to get a header) buys nothing for a demo-scale
+    deployment. A production deployment should hand the browser a
+    short-lived stream token instead.
+    """
+    verify_api_key(provided_key if provided_key is not None else api_key)
+
+
+@app.get("/api/verdicts/{verdict_id}/stream", dependencies=[Depends(verify_api_key_or_query)])
+def stream_verdict(verdict_id: str):
+    """Server-Sent Events for one verdict: the decision immediately, then
+    the explanation as the model produces it.
+
+    SSE rather than WebSockets because this is strictly one-directional
+    server->client: SSE reconnects natively, survives proxies better, and
+    needs no new dependency.
+
+    Emits:
+      decision              — score/action/escalation, available at once
+      explanation_delta     — incremental text as the LLM produces it
+      explanation_complete  — the final verdict, same shape as
+                              GET /api/explanations/{verdict_id}
+      error                 — terminal, carrying the same fallback verdict
+                              llm_agent already produces on failure
+
+    GET /api/explanations/{verdict_id} remains as the polling fallback for
+    clients behind a proxy that buffers event streams.
+    """
+    cached = _explanations_cache.get(verdict_id)
+    if cached is None:
+        raise HTTPException(status_code=404, detail="Unknown verdict_id")
+
+    def event_source():
+        # The decision itself is already final by the time any client can
+        # subscribe — scoring never waits for this stream.
+        yield _sse("decision", {"verdict_id": verdict_id, "status": cached.get("status", "pending")})
+
+        # Already finished (a reconnect, or a fast model): replay the
+        # terminal event rather than waiting for a delta that will never
+        # come.
+        if cached.get("status") == "ready":
+            yield _sse("explanation_complete", cached["verdict"])
+            return
+
+        # Attach BEFORE re-reading the cache. The LLM call starts as soon
+        # as the score response goes out, so its first deltas are often
+        # published in the milliseconds before this connection exists —
+        # and pub/sub has no retention. Subscribing first, then checking
+        # the cache, leaves no window where a result is in neither place.
+        subscription = _explanation_bus.subscription(verdict_id)
+        settled = _explanations_cache.get(verdict_id) or {}
+        if settled.get("status") == "ready":
+            subscription.close()
+            yield _sse("explanation_complete", settled["verdict"])
+            return
+
+        ticks = 0
+        for message in subscription.messages():
+            if message is None:
+                # Idle tick. Pub/sub has no retention, so a verdict that
+                # completed in the window between the cache check above
+                # and the subscription would otherwise never reach this
+                # client. Re-reading the cache here closes that race
+                # instead of leaving the connection hanging.
+                latest = _explanations_cache.get(verdict_id) or {}
+                if latest.get("status") == "ready":
+                    yield _sse("explanation_complete", latest["verdict"])
+                    return
+                ticks += 1
+                if ticks >= STREAM_MAX_IDLE_TICKS:
+                    # The producer is gone (worker died mid-call). Close
+                    # with a terminal error rather than holding a
+                    # connection open forever.
+                    yield _sse("error", dict(FALLBACK_VERDICT))
+                    return
+                # Keepalive comment — not an event, just bytes on the wire
+                # so an idle proxy doesn't close the connection.
+                yield ": keepalive\n\n"
+                continue
+            if message["type"] == "delta":
+                yield _sse("explanation_delta", {"text": message["text"]})
+            elif message["type"] == "complete":
+                yield _sse("explanation_complete", message["verdict"])
+                return
+
+    return StreamingResponse(
+        event_source(),
+        media_type="text/event-stream",
+        headers={
+            "Cache-Control": "no-cache",
+            # Nginx buffers proxied responses by default, which would hold
+            # every delta until the stream closed.
+            "X-Accel-Buffering": "no",
+        },
+    )
 
 
 @router.get("/api/explanations/{verdict_id}")

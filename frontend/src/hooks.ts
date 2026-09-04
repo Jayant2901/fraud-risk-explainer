@@ -74,38 +74,3 @@ export function useAnimatedNumber(target: number, durationMs = 650): number {
 
   return value;
 }
-
-const TYPE_TICK_MS = 18;
-const CHARS_PER_TICK = 3;
-
-// Presentational reveal of text the backend already returned in full —
-// not a token stream. Returns the full text immediately under reduced
-// motion, and always lands on exactly `fullText` (no dropped tail).
-export function useTypewriter(fullText: string, enabled = true): string {
-  const reducedMotion = usePrefersReducedMotion();
-  const instant = reducedMotion || !enabled;
-  const [shown, setShown] = useState(instant ? fullText : "");
-
-  useEffect(() => {
-    if (instant) {
-      setShown(fullText);
-      return;
-    }
-
-    setShown("");
-    let cursor = 0;
-    const timer = setInterval(() => {
-      cursor += CHARS_PER_TICK;
-      if (cursor >= fullText.length) {
-        clearInterval(timer);
-        setShown(fullText);
-        return;
-      }
-      setShown(fullText.slice(0, cursor));
-    }, TYPE_TICK_MS);
-
-    return () => clearInterval(timer);
-  }, [fullText, instant]);
-
-  return shown;
-}

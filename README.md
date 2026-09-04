@@ -510,6 +510,41 @@ risk-manager/
         └── App.tsx
 ```
 
+## How the explanation reaches the browser
+
+The decision is synchronous and the explanation is not — that has always
+been true here. What changed is how the frontend finds out.
+
+`GET /api/verdicts/{verdict_id}/stream` is a Server-Sent Events endpoint.
+It emits `decision` immediately, then `explanation_delta` events carrying
+text as Gemini produces it (`llm_agent.explain_stream`, the SDK's
+streaming call), then a terminal `explanation_complete` with the same
+validated verdict object `GET /api/explanations/{verdict_id}` returns —
+or `error` carrying the same fallback the batch path would have produced.
+
+SSE rather than WebSockets: this is strictly one-directional
+server→client, and SSE reconnects natively, survives proxies better, and
+needs no new dependency. `GET /api/explanations/{verdict_id}` remains as
+the polling fallback — the frontend retries the stream once, then falls
+back to it, so a proxy that buffers event streams degrades instead of
+hanging.
+
+**This replaced the Phase 8 typing animation.** That phase simulated a
+typewriter over already-complete text, which was the honest option while
+the transport was polling. The text now genuinely arrives in chunks from
+the model, so the simulation was deleted rather than layered on top of
+the real thing.
+
+With multiple workers, the process running the LLM call is usually not
+the one holding the client's connection, so deltas travel over Redis
+pub/sub (`src/explanation_bus.py`). Without Redis they stay in-process,
+which is correct for the single-worker development mode — unlike
+ingestion below, where falling back would have been a lie.
+
+Verified in a browser: one open SSE connection, zero polling requests,
+and the explanation growing 10 → 43 → 82 → 118 characters as chunks
+arrive.
+
 ## Streaming ingestion
 
 Everything above enters the system through a synchronous API call from

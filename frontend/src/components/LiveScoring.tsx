@@ -1,8 +1,8 @@
 import { useEffect, useMemo, useState } from "react";
-import { api, type EscalationState, type ExplanationResult, type ScoreResult, type TxnSummary } from "../api/client";
+import { api, type EscalationState, type ExplanationResult, type ScoreResult, type TxnSummary, type Verdict } from "../api/client";
 import { AlertTriangleIcon } from "./icons";
 import RiskGauge from "./RiskGauge";
-import { useAnimatedNumber, useTypewriter } from "../hooks";
+import { useAnimatedNumber } from "../hooks";
 import {
   accentBg,
   accentBorder,
@@ -22,26 +22,44 @@ import {
   typeScale,
 } from "../theme";
 
-// Reveals the already-complete LLM response as if it were arriving.
-// Sequential: the rationale only starts once the explanation has fully
-// landed, which reads more naturally than two interleaved streams.
-function ExplanationReveal({
-  explanation,
-  rationale,
+// Renders the explanation as it arrives. Phase 8 simulated this with a
+// typewriter over already-complete text, which was the honest option
+// while the transport was polling; the text now genuinely streams from
+// the model (SSE + Gemini's streaming API), so the simulation is gone
+// rather than layered on top of the real thing.
+//
+// While streaming, the raw accumulated text is shown — it is partial
+// JSON mid-flight, so only the explanation field is extracted for
+// display. Once the terminal event lands, the validated verdict replaces
+// it. No animation of our own, so reduced-motion visitors see exactly
+// the same thing: text appearing at the speed the model produces it.
+function ExplanationView({
+  streamedText,
+  verdict,
 }: {
-  explanation: string;
-  rationale: string;
+  streamedText: string;
+  verdict: Verdict | null;
 }) {
-  const typedExplanation = useTypewriter(explanation);
-  const explanationDone = typedExplanation === explanation;
-  const typedRationale = useTypewriter(rationale, explanationDone);
+  if (verdict) {
+    return (
+      <>
+        <p className="text-sm text-app-ink">{verdict.explanation}</p>
+        <p className={typeScale.caption}>Rationale: {verdict.rationale}</p>
+      </>
+    );
+  }
+  const partial = partialExplanation(streamedText);
+  if (!partial) return null;
+  return <p className="text-sm text-app-ink">{partial}</p>;
+}
 
-  return (
-    <>
-      <p className="text-sm text-app-ink">{typedExplanation}</p>
-      {explanationDone && <p className={typeScale.caption}>Rationale: {typedRationale}</p>}
-    </>
-  );
+// The model streams a JSON object, so mid-flight text looks like
+// `{"explanation": "The card ha`. This pulls out just the explanation
+// value so far, rather than showing the reader raw JSON.
+export function partialExplanation(raw: string): string {
+  const match = raw.match(/"explanation"\s*:\s*"((?:[^"\\]|\\.)*)/);
+  if (!match) return "";
+  return match[1].replace(/\\"/g, '"').replace(/\\n/g, " ").replace(/\\\\/g, "\\");
 }
 
 type Mode = "replay" | "custom";
@@ -95,6 +113,9 @@ export default function LiveScoring() {
   const [playSpeed, setPlaySpeed] = useState<PlaySpeed>(1);
   const [thresholds, setThresholds] = useState<{ review: number; block: number } | null>(null);
   const [escalationBeat, setEscalationBeat] = useState<"review" | "block" | null>(null);
+  // Raw text accumulated from explanation_delta events, before the
+  // validated verdict arrives.
+  const [streamedText, setStreamedText] = useState("");
 
   // The gauge eases from the previous score to the new one, so a second
   // score reads as a move rather than a jump-cut.
@@ -156,18 +177,27 @@ export default function LiveScoring() {
 
   const currentTxn = useMemo(() => txns[txnIdx], [txns, txnIdx]);
 
-  // The score/decision comes back immediately; the LLM explanation is
-  // generated afterward in the background, so we poll for it separately
-  // rather than blocking the scoring request on the LLM round-trip.
+  // The score/decision comes back immediately; the LLM explanation
+  // arrives afterward over SSE, token by token, so the text builds up as
+  // the model actually produces it. One open connection, no polling
+  // loop — GET /api/explanations/{id} remains as the fallback below for
+  // clients behind a proxy that buffers event streams.
   useEffect(() => {
     if (!result) return;
+    const verdictId = result.verdict_id;
     let cancelled = false;
-    setExplanation({ status: "pending" });
+    let source: EventSource | null = null;
+    let attempt = 0;
 
-    (async () => {
+    setExplanation({ status: "pending" });
+    setStreamedText("");
+
+    async function pollOnce() {
+      // Fallback transport. One shot per second until the verdict is
+      // ready, exactly as this component behaved before streaming.
       for (let i = 0; i < 30 && !cancelled; i++) {
         try {
-          const exp = await api.getExplanation(result.verdict_id);
+          const exp = await api.getExplanation(verdictId);
           if (cancelled) return;
           if (exp.status === "ready") {
             setExplanation(exp);
@@ -178,10 +208,52 @@ export default function LiveScoring() {
         }
         await new Promise((resolve) => setTimeout(resolve, 1000));
       }
-    })();
+    }
+
+    function connect() {
+      source = api.streamVerdict(verdictId);
+
+      source.addEventListener("explanation_delta", (event) => {
+        if (cancelled) return;
+        const { text } = JSON.parse((event as MessageEvent).data) as { text: string };
+        setStreamedText((current) => current + text);
+      });
+
+      source.addEventListener("explanation_complete", (event) => {
+        if (cancelled) return;
+        const verdict = JSON.parse((event as MessageEvent).data) as Verdict;
+        setExplanation({ status: "ready", verdict });
+        source?.close();
+      });
+
+      source.addEventListener("error", (event) => {
+        // A named "error" event from the server is terminal and carries
+        // the same fallback verdict the polling path would have returned.
+        const data = (event as MessageEvent).data;
+        if (data && !cancelled) {
+          setExplanation({ status: "ready", verdict: JSON.parse(data) as Verdict });
+          source?.close();
+          return;
+        }
+        // Otherwise it's a transport failure. Retry once, then give up on
+        // SSE and poll — never leave the UI stuck because a proxy blocked
+        // the stream.
+        source?.close();
+        if (cancelled) return;
+        attempt += 1;
+        if (attempt === 1) {
+          connect();
+        } else {
+          void pollOnce();
+        }
+      });
+    }
+
+    connect();
 
     return () => {
       cancelled = true;
+      source?.close();
     };
   }, [result?.verdict_id]);
 
@@ -660,15 +732,17 @@ export default function LiveScoring() {
 
               <div className="pt-3 border-t border-app-rule">
                 <h4 className={typeScale.subTitle}>AI Reviewer Explanation</h4>
-                {!explanation || explanation.status === "pending" ? (
+                {/* The pending state stays exactly as it was: it covers
+                    the window before the first delta arrives. */}
+                {(!explanation || explanation.status === "pending") && !streamedText ? (
                   <p className="text-sm text-app-faint italic mt-1.5">Generating explanation…</p>
                 ) : (
                   <div className="space-y-2 mt-1.5">
-                    <ExplanationReveal
-                      explanation={explanation.verdict.explanation}
-                      rationale={explanation.verdict.rationale}
+                    <ExplanationView
+                      streamedText={streamedText}
+                      verdict={explanation?.status === "ready" ? explanation.verdict : null}
                     />
-                    {explanation.verdict.action !== result.decision.action && (
+                    {explanation?.status === "ready" && explanation.verdict.action !== result.decision.action && (
                       <div className={`${noticeClass("warning")} text-xs flex items-start gap-2`}>
                         <AlertTriangleIcon className="h-3.5 w-3.5 mt-0.5 shrink-0" />
                         <span>

@@ -148,6 +148,72 @@ def _is_valid_response(parsed) -> bool:
     )
 
 
+INVALID_FORMAT_FALLBACK = (
+    "The model's response didn't match the expected format.",
+    "Falling back to manual review — invalid agent output.",
+)
+
+
+def _fallback_for_exception(exc: Exception) -> dict:
+    """Maps a failed Gemini call to the right fallback verdict.
+
+    Extracted so explain() and explain_stream() cannot drift into
+    different failure behavior — the streamed path has to degrade exactly
+    the way the batch path already does. The isinstance order mirrors the
+    original except-chain, because errors.ClientError/ServerError are both
+    APIError subclasses and the specific cases must win.
+    """
+    if isinstance(exc, ValueError):
+        # genai.Client() raises this (not an errors.APIError subclass) when
+        # no GEMINI_API_KEY/GOOGLE_API_KEY is configured — no network call
+        # is even attempted.
+        logger.warning("Gemini API key not configured")
+        return _fallback_response(
+            "No Gemini API key is configured. Set GEMINI_API_KEY to a "
+            "valid free API key from aistudio.google.com/apikey.",
+            "Falling back to manual review — explainer agent unauthenticated.",
+        )
+    if isinstance(exc, errors.ClientError):
+        # Gemini returns 400 INVALID_ARGUMENT (not 401/403) for a bad key,
+        # with "API key" in the message — verified against the live API.
+        if exc.code in (401, 403) or "api key" in (exc.message or "").lower():
+            logger.warning("Gemini API key missing or invalid: %s", exc)
+            return _fallback_response(
+                "The Gemini API rejected the request's credentials. Make "
+                "sure GEMINI_API_KEY is set to a valid free API key from "
+                "aistudio.google.com/apikey.",
+                "Falling back to manual review — explainer agent unauthenticated.",
+            )
+        if exc.code == 429:
+            logger.warning("Gemini API rate limited: %s", exc)
+            return _fallback_response(
+                "The Gemini API's free-tier rate limit was hit.",
+                "Falling back to manual review — explainer agent rate-limited.",
+            )
+        logger.warning("Gemini API rejected the request: %s", exc)
+        return _fallback_response(
+            "The Gemini API rejected the request.",
+            "Falling back to manual review — explainer agent request failed.",
+        )
+    if isinstance(exc, errors.ServerError):
+        logger.warning("Gemini API server error: %s", exc)
+        return _fallback_response(
+            "The Gemini API returned a server error.",
+            "Falling back to manual review — explainer agent request failed.",
+        )
+    if isinstance(exc, errors.APIError):
+        logger.warning("Gemini API error: %s", exc)
+        return _fallback_response(
+            "The Gemini API returned an error.",
+            "Falling back to manual review — explainer agent request failed.",
+        )
+    logger.warning("Could not reach the Gemini API: %s", exc)
+    return _fallback_response(
+        "Could not reach the Gemini API (network error).",
+        "Falling back to manual review — explainer agent unreachable.",
+    )
+
+
 class RiskExplainerAgent:
     def __init__(
         self,
@@ -191,63 +257,78 @@ class RiskExplainerAgent:
                     max_output_tokens=MAX_OUTPUT_TOKENS,
                 ),
             )
-        except ValueError:
-            # genai.Client() raises this (not an errors.APIError subclass) when
-            # no GEMINI_API_KEY/GOOGLE_API_KEY is configured — no network call
-            # is even attempted, so it's not caught by the API-error handlers below.
-            logger.warning("Gemini API key not configured")
-            return _fallback_response(
-                "No Gemini API key is configured. Set GEMINI_API_KEY to a "
-                "valid free API key from aistudio.google.com/apikey.",
-                "Falling back to manual review — explainer agent unauthenticated.",
-            )
-        except errors.ClientError as exc:
-            # Gemini returns 400 INVALID_ARGUMENT (not 401/403) for a bad key,
-            # with "API key" in the message — verified against the live API.
-            if exc.code in (401, 403) or "api key" in (exc.message or "").lower():
-                logger.warning("Gemini API key missing or invalid: %s", exc)
-                return _fallback_response(
-                    "The Gemini API rejected the request's credentials. Make "
-                    "sure GEMINI_API_KEY is set to a valid free API key from "
-                    "aistudio.google.com/apikey.",
-                    "Falling back to manual review — explainer agent unauthenticated.",
-                )
-            if exc.code == 429:
-                logger.warning("Gemini API rate limited: %s", exc)
-                return _fallback_response(
-                    "The Gemini API's free-tier rate limit was hit.",
-                    "Falling back to manual review — explainer agent rate-limited.",
-                )
-            logger.warning("Gemini API rejected the request: %s", exc)
-            return _fallback_response(
-                "The Gemini API rejected the request.",
-                "Falling back to manual review — explainer agent request failed.",
-            )
-        except errors.ServerError as exc:
-            logger.warning("Gemini API server error: %s", exc)
-            return _fallback_response(
-                "The Gemini API returned a server error.",
-                "Falling back to manual review — explainer agent request failed.",
-            )
-        except errors.APIError as exc:
-            logger.warning("Gemini API error: %s", exc)
-            return _fallback_response(
-                "The Gemini API returned an error.",
-                "Falling back to manual review — explainer agent request failed.",
-            )
         except Exception as exc:
-            logger.warning("Could not reach the Gemini API: %s", exc)
-            return _fallback_response(
-                "Could not reach the Gemini API (network error).",
-                "Falling back to manual review — explainer agent unreachable.",
-            )
+            # Every failure mode (missing key, bad key, rate limit, server
+            # error, unreachable) maps to its own fallback message — see
+            # _fallback_for_exception, shared with explain_stream so the
+            # two paths can never degrade differently.
+            return _fallback_for_exception(exc)
 
         parsed = response.parsed
         if not _is_valid_response(parsed):
             logger.warning("Gemini response failed schema validation: %r", parsed)
-            return _fallback_response(
-                "The model's response didn't match the expected format.",
-                "Falling back to manual review — invalid agent output.",
-            )
+            return _fallback_response(*INVALID_FORMAT_FALLBACK)
 
         return parsed.model_dump()
+
+    def explain_stream(self, risk_score: float, top_factors: list, escalation: dict | None = None):
+        """Streaming twin of explain(), for GET /api/verdicts/{id}/stream.
+
+        Yields, in order:
+          {"type": "delta", "text": str}     zero or more, as the model emits
+          {"type": "complete", "verdict": {}} exactly one, terminal
+
+        The verdict is only emitted after the accumulated text is parsed
+        and validated the same way explain() validates its response — a
+        stream that produces malformed JSON degrades to the same fallback
+        rather than emitting a broken verdict. A failure at any point
+        yields a terminal "complete" carrying the matching fallback, so a
+        consumer always gets exactly one terminal event.
+
+        explain() is untouched and remains the batch path used by the
+        stream consumer and by any caller that just wants the finished
+        object.
+        """
+        if escalation is None:
+            escalation = DEFAULT_ESCALATION
+
+        user_prompt = build_user_prompt(risk_score, top_factors, escalation)
+        accumulated = []
+
+        try:
+            client = self._client or genai.Client()
+            self._client = client
+            stream = client.models.generate_content_stream(
+                model=self.model,
+                contents=user_prompt,
+                config=types.GenerateContentConfig(
+                    system_instruction=self.system_prompt,
+                    response_mime_type="application/json",
+                    response_schema=RiskVerdict,
+                    max_output_tokens=MAX_OUTPUT_TOKENS,
+                ),
+            )
+            for chunk in stream:
+                text = getattr(chunk, "text", None)
+                if not text:
+                    continue
+                accumulated.append(text)
+                yield {"type": "delta", "text": text}
+        except Exception as exc:
+            yield {"type": "complete", "verdict": _fallback_for_exception(exc)}
+            return
+
+        raw = "".join(accumulated)
+        try:
+            parsed = RiskVerdict.model_validate_json(raw)
+        except Exception:
+            logger.warning("Streamed Gemini response was not valid JSON: %r", raw[:200])
+            yield {"type": "complete", "verdict": _fallback_response(*INVALID_FORMAT_FALLBACK)}
+            return
+
+        if not _is_valid_response(parsed):
+            logger.warning("Streamed Gemini response failed schema validation: %r", parsed)
+            yield {"type": "complete", "verdict": _fallback_response(*INVALID_FORMAT_FALLBACK)}
+            return
+
+        yield {"type": "complete", "verdict": parsed.model_dump()}

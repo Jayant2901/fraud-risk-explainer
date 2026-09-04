@@ -282,6 +282,16 @@ export const api = {
     }),
   getExplanation: (verdictId: string) =>
     request<ExplanationResult>(`/explanations/${encodeURIComponent(verdictId)}`),
+  // Server-Sent Events for one verdict: `decision` immediately, then
+  // `explanation_delta` chunks as the model produces them, then a
+  // terminal `explanation_complete` (or `error`). EventSource can't set
+  // headers, so the API key rides as a query parameter — the same key
+  // the X-API-Key header carries, over the same TLS connection.
+  streamVerdict: (verdictId: string): EventSource =>
+    new EventSource(
+      `${BASE}/verdicts/${encodeURIComponent(verdictId)}/stream` +
+        (API_KEY ? `?api_key=${encodeURIComponent(API_KEY)}` : "")
+    ),
   costAnalysis: (fraudLoss: number, fpCost: number) =>
     request<CostAnalysis>(
       `/cost-analysis?fraud_loss=${fraudLoss}&fp_cost=${fpCost}`
