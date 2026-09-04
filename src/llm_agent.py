@@ -18,12 +18,17 @@ Setup: set the GEMINI_API_KEY (or GOOGLE_API_KEY) environment variable
 to a free key from https://aistudio.google.com/apikey.
 """
 import logging
+import os
 import re
+import threading
+import time
 
 from google import genai
 from google.genai import errors, types
 from pydantic import BaseModel
 from typing import Literal
+
+from circuit_breaker import CircuitBreaker
 
 logger = logging.getLogger(__name__)
 
@@ -153,8 +158,58 @@ INVALID_FORMAT_FALLBACK = (
     "Falling back to manual review — invalid agent output.",
 )
 
+# Hard wall-clock ceiling on an LLM call. Without one, a hung request
+# occupies a worker thread indefinitely; enough of those and scoring —
+# which needs no LLM at all — starts queueing behind explanations.
+LLM_TIMEOUT_SECONDS = float(os.environ.get("LLM_TIMEOUT_SECONDS", "20"))
+
+TIMEOUT_FALLBACK = (
+    "The Gemini API did not respond within the time limit.",
+    "Falling back to manual review — explainer agent timed out.",
+)
+
+BREAKER_OPEN_FALLBACK = (
+    "Explanations are paused: the Gemini API has failed repeatedly, so "
+    "calls are being skipped until it recovers.",
+    "Falling back to manual review — explainer circuit breaker open.",
+)
+
+
+class LLMTimeoutError(Exception):
+    """The LLM call exceeded LLM_TIMEOUT_SECONDS."""
+
+
+def _run_with_timeout(call, timeout_seconds: float):
+    """Run a blocking call with a wall-clock ceiling.
+
+    A thread rather than a signal because signal-based timeouts only work
+    on the main thread, and these calls run in FastAPI's background
+    threadpool and in the stream consumer. The abandoned thread is a
+    daemon: it cannot keep the process alive, and the SDK's own socket
+    timeouts eventually release it.
+    """
+    result: dict = {}
+
+    def target():
+        try:
+            result["value"] = call()
+        except BaseException as exc:  # re-raised on the caller's thread
+            result["error"] = exc
+
+    thread = threading.Thread(target=target, daemon=True)
+    thread.start()
+    thread.join(timeout_seconds)
+    if thread.is_alive():
+        raise LLMTimeoutError(f"LLM call exceeded {timeout_seconds}s")
+    if "error" in result:
+        raise result["error"]
+    return result.get("value")
+
 
 def _fallback_for_exception(exc: Exception) -> dict:
+    if isinstance(exc, LLMTimeoutError):
+        logger.warning("Gemini API call timed out: %s", exc)
+        return _fallback_response(*TIMEOUT_FALLBACK)
     """Maps a failed Gemini call to the right fallback verdict.
 
     Extracted so explain() and explain_stream() cannot drift into
@@ -221,6 +276,8 @@ class RiskExplainerAgent:
         model: str = MODEL,
         review_threshold: float = DEFAULT_REVIEW_THRESHOLD,
         block_threshold: float = DEFAULT_BLOCK_THRESHOLD,
+        timeout_seconds: float = LLM_TIMEOUT_SECONDS,
+        breaker: "CircuitBreaker | None" = None,
     ):
         # Constructing genai.Client() with no GEMINI_API_KEY/GOOGLE_API_KEY
         # raises ValueError immediately — deferred to inside explain()'s try
@@ -237,27 +294,46 @@ class RiskExplainerAgent:
         # string, so it can't silently drift from decide_action()'s actual
         # boundaries.
         self.system_prompt = build_system_prompt(review_threshold, block_threshold)
+        self.timeout_seconds = timeout_seconds
+        # Gates only this one dependency. Scoring, entity memory and the
+        # review queue are untouched by it — see src/circuit_breaker.py.
+        self._breaker = breaker if breaker is not None else CircuitBreaker("llm")
+
+    @property
+    def breaker(self) -> "CircuitBreaker":
+        """Exposed so /api/health can report breaker state."""
+        return self._breaker
 
     def explain(self, risk_score: float, top_factors: list, escalation: dict | None = None) -> dict:
         if escalation is None:
             escalation = DEFAULT_ESCALATION
+
+        if not self._breaker.allow():
+            # The dependency is known-down; skip the call entirely rather
+            # than spending the timeout discovering it again.
+            return _fallback_response(*BREAKER_OPEN_FALLBACK)
 
         user_prompt = build_user_prompt(risk_score, top_factors, escalation)
 
         try:
             client = self._client or genai.Client()
             self._client = client  # reuse across calls once construction succeeds
-            response = client.models.generate_content(
-                model=self.model,
-                contents=user_prompt,
-                config=types.GenerateContentConfig(
-                    system_instruction=self.system_prompt,
-                    response_mime_type="application/json",
-                    response_schema=RiskVerdict,
-                    max_output_tokens=MAX_OUTPUT_TOKENS,
+            response = _run_with_timeout(
+                lambda: client.models.generate_content(
+                    model=self.model,
+                    contents=user_prompt,
+                    config=types.GenerateContentConfig(
+                        system_instruction=self.system_prompt,
+                        response_mime_type="application/json",
+                        response_schema=RiskVerdict,
+                        max_output_tokens=MAX_OUTPUT_TOKENS,
+                    ),
                 ),
+                self.timeout_seconds,
             )
+            self._breaker.record_success()
         except Exception as exc:
+            self._breaker.record_failure()
             # Every failure mode (missing key, bad key, rate limit, server
             # error, unreachable) maps to its own fallback message — see
             # _fallback_for_exception, shared with explain_stream so the
@@ -292,29 +368,47 @@ class RiskExplainerAgent:
         if escalation is None:
             escalation = DEFAULT_ESCALATION
 
+        if not self._breaker.allow():
+            yield {"type": "complete", "verdict": _fallback_response(*BREAKER_OPEN_FALLBACK)}
+            return
+
         user_prompt = build_user_prompt(risk_score, top_factors, escalation)
         accumulated = []
+        deadline = time.monotonic() + self.timeout_seconds
 
         try:
             client = self._client or genai.Client()
             self._client = client
-            stream = client.models.generate_content_stream(
-                model=self.model,
-                contents=user_prompt,
-                config=types.GenerateContentConfig(
-                    system_instruction=self.system_prompt,
-                    response_mime_type="application/json",
-                    response_schema=RiskVerdict,
-                    max_output_tokens=MAX_OUTPUT_TOKENS,
+            # Opening the stream is itself a network call that can hang,
+            # so it gets the same ceiling as the batch path — the
+            # per-chunk deadline below only covers gaps once data flows.
+            stream = _run_with_timeout(
+                lambda: client.models.generate_content_stream(
+                    model=self.model,
+                    contents=user_prompt,
+                    config=types.GenerateContentConfig(
+                        system_instruction=self.system_prompt,
+                        response_mime_type="application/json",
+                        response_schema=RiskVerdict,
+                        max_output_tokens=MAX_OUTPUT_TOKENS,
+                    ),
                 ),
+                self.timeout_seconds,
             )
             for chunk in stream:
+                # The budget covers the whole stream, not each chunk: a
+                # model that emits a token every 19s must not stay on the
+                # wire forever just because no single gap is long.
+                if time.monotonic() > deadline:
+                    raise LLMTimeoutError(f"LLM stream exceeded {self.timeout_seconds}s")
                 text = getattr(chunk, "text", None)
                 if not text:
                     continue
                 accumulated.append(text)
                 yield {"type": "delta", "text": text}
+            self._breaker.record_success()
         except Exception as exc:
+            self._breaker.record_failure()
             yield {"type": "complete", "verdict": _fallback_for_exception(exc)}
             return
 

@@ -66,7 +66,50 @@ class TestHealth:
     def test_health_returns_ok(self, client):
         r = client.get("/api/health")
         assert r.status_code == 200
-        assert r.json() == {"status": "ok"}
+        assert r.json()["status"] == "ok"
+
+    def test_reports_the_llm_circuit_breaker_state(self, client):
+        body = client.get("/api/health").json()
+
+        assert body["llm"]["state"] in {"closed", "open", "unknown"}
+        assert "consecutive_failures" in body["llm"]
+        assert "seconds_until_retry" in body["llm"]
+
+    def test_reflects_an_open_breaker(self, client, monkeypatch):
+        import api.main as main
+        from circuit_breaker import CircuitBreaker
+
+        breaker = CircuitBreaker("llm-health-test", failure_threshold=1, cooldown_seconds=60)
+        breaker.record_failure()
+
+        class AgentWithOpenBreaker:
+            @property
+            def breaker(self):
+                return breaker
+
+        monkeypatch.setattr(main, "get_agent", lambda: AgentWithOpenBreaker())
+
+        body = client.get("/api/health").json()
+
+        assert body["llm"]["state"] == "open"
+        assert body["llm"]["consecutive_failures"] == 1
+        assert body["llm"]["seconds_until_retry"] > 0
+        # Explanations degrading is deliberately not this service failing:
+        # scoring is unaffected, so overall status stays ok.
+        assert body["status"] == "ok"
+
+    def test_stays_up_when_the_agent_cannot_be_constructed(self, client, monkeypatch):
+        import api.main as main
+
+        def exploding_agent():
+            raise RuntimeError("no credentials")
+
+        monkeypatch.setattr(main, "get_agent", exploding_agent)
+
+        body = client.get("/api/health").json()
+
+        assert body["status"] == "ok"
+        assert body["llm"]["state"] == "unknown"
 
 
 class TestListEntities:

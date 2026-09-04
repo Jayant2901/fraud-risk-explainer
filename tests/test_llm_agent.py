@@ -306,3 +306,122 @@ class TestExplainStream(unittest.TestCase):
         messages = list(agent.explain_stream(85.0, TOP_FACTORS))
 
         assert [m["type"] for m in messages] == ["delta", "complete"]
+
+
+class TestTimeout(unittest.TestCase):
+    """A slow LLM must degrade to a fallback, not occupy a worker thread
+    indefinitely — see _run_with_timeout."""
+
+    def _hanging_client(self):
+        import threading
+
+        client = MagicMock()
+        never = threading.Event()
+
+        def hang(*_args, **_kwargs):
+            never.wait(30)  # far beyond the injected timeout
+
+        client.models.generate_content.side_effect = hang
+        client.models.generate_content_stream.side_effect = hang
+        return client
+
+    def test_a_hanging_call_returns_the_timeout_fallback(self):
+        agent = RiskExplainerAgent(client=self._hanging_client(), timeout_seconds=0.2)
+
+        verdict = agent.explain(85.0, TOP_FACTORS)
+
+        assert "did not respond within the time limit" in verdict["explanation"]
+        assert "timed out" in verdict["rationale"]
+        assert verdict["action"] == "REVIEW"
+
+    def test_the_timeout_fallback_is_distinct_from_other_failures(self):
+        """The operational response differs — a timeout is not a bad key
+        and not a rate limit — so the messages must not collapse."""
+        timed_out = RiskExplainerAgent(
+            client=self._hanging_client(), timeout_seconds=0.2
+        ).explain(85.0, TOP_FACTORS)
+        rate_limited = RiskExplainerAgent(
+            client=make_client(raises=_client_error(429, "quota"))
+        ).explain(85.0, TOP_FACTORS)
+        no_key = RiskExplainerAgent(
+            client=make_client(raises=ValueError("no key"))
+        ).explain(85.0, TOP_FACTORS)
+
+        messages = {timed_out["explanation"], rate_limited["explanation"], no_key["explanation"]}
+        assert len(messages) == 3
+
+    def test_a_hanging_stream_also_times_out(self):
+        agent = RiskExplainerAgent(client=self._hanging_client(), timeout_seconds=0.2)
+
+        verdict = list(agent.explain_stream(85.0, TOP_FACTORS))[-1]["verdict"]
+
+        assert "did not respond within the time limit" in verdict["explanation"]
+
+    def test_a_call_inside_the_budget_is_unaffected(self):
+        parsed = RiskVerdict.model_validate_json(VALID_VERDICT_JSON)
+        agent = RiskExplainerAgent(client=make_client(parsed=parsed), timeout_seconds=5)
+
+        assert agent.explain(85.0, TOP_FACTORS)["action"] == "BLOCK"
+
+    def test_scoring_is_never_blocked_by_the_llm(self):
+        """The whole point: a hung LLM costs one bounded wait here and
+        nothing at all in the decision path, which never calls this."""
+        import time
+
+        agent = RiskExplainerAgent(client=self._hanging_client(), timeout_seconds=0.3)
+
+        start = time.monotonic()
+        agent.explain(85.0, TOP_FACTORS)
+        elapsed = time.monotonic() - start
+
+        assert elapsed < 3.0  # bounded by the timeout, not the 30s hang
+
+
+class TestCircuitBreakerIntegration(unittest.TestCase):
+    def _failing_agent(self, threshold=2):
+        from circuit_breaker import CircuitBreaker
+
+        breaker = CircuitBreaker("llm-agent-test", failure_threshold=threshold, cooldown_seconds=60)
+        client = make_client(raises=_server_error(500, "boom"))
+        return RiskExplainerAgent(client=client, breaker=breaker), client, breaker
+
+    def test_repeated_failures_open_the_breaker(self):
+        agent, _client, breaker = self._failing_agent(threshold=2)
+
+        agent.explain(85.0, TOP_FACTORS)
+        agent.explain(85.0, TOP_FACTORS)
+
+        assert breaker.state()["state"] == "open"
+
+    def test_an_open_breaker_short_circuits_without_calling_the_client(self):
+        agent, client, _breaker = self._failing_agent(threshold=1)
+        agent.explain(85.0, TOP_FACTORS)
+        calls_before = client.models.generate_content.call_count
+
+        verdict = agent.explain(85.0, TOP_FACTORS)
+
+        assert client.models.generate_content.call_count == calls_before
+        assert "Explanations are paused" in verdict["explanation"]
+        assert "circuit breaker open" in verdict["rationale"]
+
+    def test_the_streaming_path_respects_the_same_breaker(self):
+        agent, _client, breaker = self._failing_agent(threshold=1)
+        agent.explain(85.0, TOP_FACTORS)  # opens it
+
+        verdict = list(agent.explain_stream(85.0, TOP_FACTORS))[-1]["verdict"]
+
+        assert "Explanations are paused" in verdict["explanation"]
+        assert breaker.state()["state"] == "open"
+
+    def test_a_success_keeps_the_breaker_closed(self):
+        from circuit_breaker import CircuitBreaker
+
+        parsed = RiskVerdict.model_validate_json(VALID_VERDICT_JSON)
+        breaker = CircuitBreaker("llm-ok-test", failure_threshold=2)
+        agent = RiskExplainerAgent(client=make_client(parsed=parsed), breaker=breaker)
+
+        for _ in range(5):
+            agent.explain(85.0, TOP_FACTORS)
+
+        assert breaker.state()["state"] == "closed"
+        assert breaker.state()["consecutive_failures"] == 0

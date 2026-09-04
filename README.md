@@ -510,6 +510,48 @@ risk-manager/
         └── App.tsx
 ```
 
+## Latency budget: the LLM can never degrade the decision
+
+The decision path does not call the LLM — that has always been the
+design. What was missing was a defense against the LLM being *slow*
+rather than broken: a call that hangs occupies a worker thread for its
+full duration, and enough of those starve the pool until scoring, which
+needs no LLM at all, starts queueing behind explanations.
+
+Two mechanisms close that:
+
+- **A hard wall-clock timeout** (`LLM_TIMEOUT_SECONDS`, default 20) on
+  both the batch and streaming calls, including opening the stream. A
+  timeout returns its own fallback message, distinct from the
+  bad-key/rate-limit/unreachable ones — the operational response to each
+  differs, so they are not collapsed into one string.
+- **A circuit breaker** (`src/circuit_breaker.py`, ~40 lines, no
+  dependency). After `LLM_BREAKER_THRESHOLD` consecutive failures
+  (default 5) it opens for `LLM_BREAKER_COOLDOWN_SECONDS` (default 60),
+  returning the fallback immediately instead of spending the timeout
+  rediscovering that the API is down. The failure counter lives in Redis
+  when configured, so one worker learning the API is down spares the
+  others.
+
+`GET /api/health` reports breaker state, consecutive failures and time
+until retry. `status` stays `ok` with the breaker open: explanations are
+best-effort, and their failure is deliberately not a failure of this
+service.
+
+**The breaker gates exactly one dependency.** Scoring, entity memory and
+the review queue are untouched by it.
+
+Measured with a deliberately invalid `GEMINI_API_KEY`, scoring the same
+transaction six times:
+
+| Score | Decision | Explanation outcome | Latency |
+|---|---|---|---|
+| 1-5 | REVIEW | agent unauthenticated (real call attempted) | 95-1410ms |
+| 6 | REVIEW | circuit breaker open (no network call) | **9ms** |
+
+All six returned the correct risk score and decision; `/api/health`
+showed `open`, 5 consecutive failures, 60s until retry.
+
 ## How the explanation reaches the browser
 
 The decision is synchronous and the explanation is not — that has always

@@ -60,7 +60,9 @@ class TestHealthIsUnprotected:
     def test_health_requires_no_key(self, client):
         r = client.get("/api/health")
         assert r.status_code == 200
-        assert r.json() == {"status": "ok"}
+        # Also carries an `llm` block reporting circuit-breaker state —
+        # see TestHealth in test_api.py.
+        assert r.json()["status"] == "ok"
 
 
 class TestFailsClosedWhenUnconfigured:

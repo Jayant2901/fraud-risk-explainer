@@ -66,6 +66,7 @@ from cost_analysis import cost_curve, DEFAULT_AVG_FRAUD_LOSS, DEFAULT_AVG_FP_COS
 from impact_summary import extrapolate_monthly_savings
 from scoring_service import FALLBACK_VERDICT, ScoringService, generate_explanation
 from explanation_bus import ExplanationBus
+from circuit_breaker import CircuitBreaker
 import event_stream
 
 configure_logging()
@@ -266,7 +267,14 @@ def get_decision_thresholds() -> dict:
 @lru_cache(maxsize=1)
 def get_agent() -> RiskExplainerAgent:
     thresholds = get_decision_thresholds()
-    return RiskExplainerAgent(review_threshold=thresholds["review"], block_threshold=thresholds["block"])
+    return RiskExplainerAgent(
+        review_threshold=thresholds["review"],
+        block_threshold=thresholds["block"],
+        # Redis-backed when configured, so every worker sees the same
+        # failure count instead of each independently rediscovering that
+        # the LLM is down.
+        breaker=CircuitBreaker("llm", redis_client=_redis_client),
+    )
 
 
 SAMPLE_DATA_CACHE_PATH = "models/sample_data_cache.pkl"
@@ -846,7 +854,22 @@ def get_cold_start_analysis():
 
 @app.get("/api/health")
 def health():
-    return {"status": "ok"}
+    """Liveness plus the state of the one dependency that can degrade
+    without any HTTP metric noticing.
+
+    "status" stays "ok" even with the LLM breaker open: explanations are
+    best-effort and their failure is deliberately not a failure of this
+    service — scoring is unaffected. The llm block is what turns "the
+    explanations stopped working" into something diagnosable.
+    """
+    try:
+        llm = get_agent().breaker.state()
+    except Exception:
+        # Agent construction itself failed (e.g. no credentials). Report
+        # it rather than 500-ing the health check.
+        logger.warning("Could not read LLM breaker state", exc_info=True)
+        llm = {"state": "unknown", "consecutive_failures": 0, "seconds_until_retry": 0.0}
+    return {"status": "ok", "llm": llm}
 
 
 app.include_router(router)
