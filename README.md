@@ -510,6 +510,55 @@ risk-manager/
         └── App.tsx
 ```
 
+## Streaming ingestion
+
+Everything above enters the system through a synchronous API call from
+the UI. `POST /api/events/transaction` is the other way in: a
+webhook-shaped endpoint meant for a payment processor rather than a
+person.
+
+It validates the payload, deduplicates on the sender's `event_id`,
+publishes the event to a **Redis Stream**, and returns `202 Accepted`
+with a `verdict_id` — without scoring. That ordering is the point: a
+webhook sender times out, it does not wait for a model, let alone an
+LLM. Scoring happens in a separate worker process:
+
+```bash
+# alongside the API (needs REDIS_URL set)
+python -m src.stream_consumer
+
+# or as part of the stack, scaled to taste
+docker compose up --scale consumer=3
+```
+
+The consumer reads from a Redis Streams **consumer group**, so several
+workers share one stream without duplicating work, and every message is
+acknowledged only after it is scored. A message that fails is left
+pending and redelivered; after `MAX_DELIVERY_ATTEMPTS` it moves to a
+dead-letter stream, readable at `GET /api/events/dead-letter` so a
+failed event doesn't require a Redis CLI to find. A message read by a
+worker that then crashed is reclaimed by another worker
+(`XAUTOCLAIM`) rather than sitting pending forever.
+
+Both the consumer and the synchronous endpoints score through one
+function — `ScoringService.score_and_decide` in `src/scoring_service.py`.
+That extraction is deliberate: two entry points into scoring is exactly
+how a system grows two different answers to "would this be blocked", so
+`tests/test_stream_consumer.py` asserts the two paths agree on the same
+input rather than assuming they do.
+
+**This endpoint requires Redis and returns 503 without it.** Everywhere
+else in this project Redis is optional and absence falls back to
+in-process state; durable ingestion is the one place where that would be
+a lie, because an in-process queue would accept events and lose them on
+restart while looking exactly like a working pipeline. The synchronous
+`/api/score` and `/api/score-custom` paths are unaffected and still need
+no Redis.
+
+Rate limits differ by intent: `/api/score` allows 30/minute because a
+human drives it; ingestion allows 600/minute (`INGEST_RATE_LIMIT`)
+because a machine does.
+
 ## Architecture
 
 ```mermaid

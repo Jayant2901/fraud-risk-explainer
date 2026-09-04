@@ -50,20 +50,21 @@ from slowapi.middleware import SlowAPIMiddleware
 from slowapi.util import get_remote_address
 
 from logging_utils import configure_logging, RequestIDMiddleware
-from decision_rules import decide_action, load_decision_thresholds
+from decision_rules import load_decision_thresholds
 from risk_explainer import RiskExplainer
 from llm_agent import RiskExplainerAgent
 from entity_memory import (
     create_entity_memory,
-    _compute_escalation_state,
     DEFAULT_WATCH_PRESSURE_THRESHOLD,
     DEFAULT_ELEVATED_PRESSURE_THRESHOLD,
 )
 from redis_utils import get_redis_client, KeyedCache
-from review_queue import create_review_queue, UnknownVerdictError, AlreadyDisposedError, NOTE_MAX_LEN, _now_iso
+from review_queue import create_review_queue, UnknownVerdictError, AlreadyDisposedError, NOTE_MAX_LEN
 from data_utils import load_raw_data, engineer_features
 from cost_analysis import cost_curve, DEFAULT_AVG_FRAUD_LOSS, DEFAULT_AVG_FP_COST
 from impact_summary import extrapolate_monthly_savings
+from scoring_service import ScoringService, generate_explanation
+import event_stream
 
 configure_logging()
 logger = logging.getLogger(__name__)
@@ -182,25 +183,40 @@ _review_queue = create_review_queue(_redis_client)
 
 
 def _generate_explanation(verdict_id: str, risk_score: float, top_factors: list, escalation: dict):
-    # This runs in a background task after the response has already gone
-    # out — an uncaught exception here doesn't fail the request, it just
-    # logs silently and leaves the frontend polling forever, since nothing
-    # ever writes a terminal status for verdict_id. RiskExplainerAgent.explain()
-    # already catches its own API-level failures, but this is the backstop
-    # for anything else (e.g. a bug in agent construction) so polling always
-    # terminates one way or another.
-    try:
-        agent = get_agent()
-        verdict = agent.explain(risk_score, top_factors, escalation)
-    except Exception:
-        logger.exception("Unhandled error generating explanation", extra={"verdict_id": verdict_id})
-        verdict = {
-            "explanation": "An unexpected error occurred while generating the AI explanation.",
-            "action": "REVIEW",
-            "escalated_due_to_history": False,
-            "rationale": "Falling back to manual review — explainer agent crashed.",
-        }
-    _explanations_cache.put(verdict_id, {"status": "ready", "verdict": verdict})
+    """Background task; delegates to the shared implementation so the
+    stream consumer produces identical explanations and fallbacks."""
+    generate_explanation(
+        get_agent, _explanations_cache, verdict_id, risk_score, top_factors, escalation
+    )
+
+
+def _score_response(scored: dict) -> dict:
+    """The public shape of a scoring response. baseline_decision is used
+    internally (review-queue metrics) but has never been part of this
+    response, so it's dropped here rather than silently widening the
+    documented API."""
+    return {
+        "risk_score": scored["risk_score"],
+        "above_threshold": scored["above_threshold"],
+        "top_factors": scored["top_factors"],
+        "escalation_before": scored["escalation_before"],
+        "decision": scored["decision"],
+        "verdict_id": scored["verdict_id"],
+    }
+
+
+def _scoring_service() -> ScoringService:
+    """Built per call rather than once at import: the singletons it wraps
+    (get_explainer/get_decision_thresholds) are lru_cache'd getters that
+    tests monkeypatch, and a service captured at import time would pin
+    the unpatched originals."""
+    return ScoringService(
+        explainer=get_explainer(),
+        memory=_memory,
+        review_queue=_review_queue,
+        explanations_cache=_explanations_cache,
+        thresholds_provider=get_decision_thresholds,
+    )
 
 
 @lru_cache(maxsize=1)
@@ -300,6 +316,99 @@ class AddNoteRequest(BaseModel):
     text: str = Field(min_length=1, max_length=NOTE_MAX_LEN)
 
 
+class TransactionEventRequest(CustomTransactionRequest):
+    """Webhook-shaped ingestion payload. Deliberately extends the existing
+    CustomTransactionRequest rather than defining a second transaction
+    schema that could drift from it — the transaction fields are the same
+    fields, plus the two things an event carries that a synchronous
+    request doesn't."""
+    # Sender-supplied and stable across retries: real payment processors
+    # redeliver webhooks, and a redelivery must not produce a second
+    # verdict or a second entity-memory record.
+    event_id: str = Field(min_length=1, max_length=200)
+    entity_id: str | None = None
+
+
+# /api/score is 30/minute because it's driven by a human clicking in the
+# UI. This endpoint is machine-facing — a processor's webhook sender, not
+# a person — so the limit reflects intended ingestion throughput instead.
+# 600/minute is 10/second sustained, comfortably above what the consumer
+# needs to keep up with on this hardware and still low enough to be a
+# real ceiling rather than an open door.
+INGEST_RATE_LIMIT = "600/minute"
+
+# Dedup window for event_id. Longer than any sane webhook retry schedule,
+# short enough that the key space stays bounded.
+EVENT_DEDUP_TTL_SECONDS = 24 * 60 * 60
+
+_event_dedup_cache = KeyedCache(
+    _redis_client, prefix="riskmgr:events:seen", ttl_seconds=EVENT_DEDUP_TTL_SECONDS
+)
+
+
+@router.post("/api/events/transaction", status_code=202)
+@limiter.limit(INGEST_RATE_LIMIT)
+def ingest_transaction_event(request: Request, req: TransactionEventRequest):
+    """Accept a transaction event for asynchronous scoring.
+
+    Returns 202 immediately without scoring: a webhook sender times out,
+    it does not wait for a model — let alone an LLM. The event is queued
+    onto a Redis Stream and scored by src/stream_consumer.py, which runs
+    the same scoring path this API's synchronous endpoints use.
+
+    Requires REDIS_URL. Everywhere else in this codebase Redis is
+    optional and absence falls back to in-process state, but durable
+    ingestion is the one place that would be a lie: an in-process queue
+    would accept events and lose them on restart while looking exactly
+    like a working pipeline. So this returns 503 instead.
+    """
+    if _redis_client is None:
+        raise HTTPException(
+            status_code=503,
+            detail=(
+                "Streaming ingestion requires Redis. Set REDIS_URL and run the stream "
+                "consumer (python -m src.stream_consumer); the synchronous /api/score "
+                "and /api/score-custom endpoints work without it."
+            ),
+        )
+
+    existing = _event_dedup_cache.get(req.event_id)
+    if existing is not None:
+        # Idempotent by design: the same answer, and nothing enqueued a
+        # second time.
+        return {**existing, "duplicate": True}
+
+    verdict_id = str(uuid.uuid4())
+    event = {
+        "event_id": req.event_id,
+        "verdict_id": verdict_id,
+        "entity_id": req.entity_id,
+        "transaction": req.model_dump(
+            exclude={"event_id", "entity_id", "attach_to_entity_id"}, exclude_none=True
+        ),
+    }
+
+    event_stream.ensure_group(_redis_client)
+    event_stream.publish_event(_redis_client, event)
+
+    accepted = {"event_id": req.event_id, "verdict_id": verdict_id, "status": "accepted"}
+    _event_dedup_cache.put(req.event_id, accepted)
+    logger.info("Transaction event accepted", extra={"event_id": req.event_id, "verdict_id": verdict_id})
+    return {**accepted, "duplicate": False}
+
+
+@router.get("/api/events/dead-letter")
+def list_dead_letter_events(limit: int = 50):
+    """Events the consumer failed to score after every retry. Visible
+    here so a failed event doesn't require a Redis CLI to find."""
+    if _redis_client is None:
+        raise HTTPException(
+            status_code=503,
+            detail="Streaming ingestion requires Redis. Set REDIS_URL to use this endpoint.",
+        )
+    return {"items": event_stream.list_dead_letter(_redis_client, limit=limit)}
+
+
 @router.get("/api/entities")
 def list_entities():
     samples = get_sample_data()
@@ -361,54 +470,24 @@ def score(
 
     txn = entity_txns.iloc[req.txn_index].to_dict()
 
-    explainer = get_explainer()
-    result = explainer.score_transaction(txn)
-
-    escalation_before = _memory.get_escalation_state(req.entity_id)
-    thresholds = get_decision_thresholds()
-
     # The decision that actually gates the transaction is made right here,
     # synchronously (score + SHAP + rules, ~100-130ms measured locally) —
-    # it does not wait on the LLM. record_verdict() runs immediately too,
-    # so escalation state for this entity's NEXT transaction is already
-    # correct.
-    decision = decide_action(result["risk_score"], escalation_before, thresholds["review"], thresholds["block"])
-    # What the system would have done with no entity memory at all — kept
-    # alongside the real decision so the review queue's metrics can split
-    # reviewer precision by whether escalation is what triggered the flag
-    # (the live version of src/escalation_ablation.py's offline comparison).
-    baseline_decision = decide_action(result["risk_score"], {"state": "NORMAL"}, thresholds["review"], thresholds["block"])
-    _memory.record_verdict(req.entity_id, decision["action"], result["risk_score"])
-
-    verdict_id = str(uuid.uuid4())
-    _explanations_cache.put(verdict_id, {"status": "pending"})
-    background_tasks.add_task(
-        _generate_explanation, verdict_id, result["risk_score"], result["top_factors"], escalation_before
+    # it does not wait on the LLM. The verdict is recorded immediately
+    # too, so escalation state for this entity's NEXT transaction is
+    # already correct. See src/scoring_service.py.
+    scored = _scoring_service().score_and_decide(
+        txn, req.entity_id, txn_index=req.txn_index
     )
 
-    if decision["action"] != "ALLOW":
-        _review_queue.add({
-            "verdict_id": verdict_id,
-            "entity_id": req.entity_id,
-            "txn_index": req.txn_index,
-            "risk_score": result["risk_score"],
-            "decision": decision,
-            "baseline_decision": baseline_decision,
-            "escalated_due_to_history": decision["escalated_due_to_history"],
-            "disposition": None,
-            "disposed_at": None,
-            "created_at": _now_iso(),
-            "notes": [],
-        })
+    background_tasks.add_task(
+        _generate_explanation,
+        scored["verdict_id"],
+        scored["risk_score"],
+        scored["top_factors"],
+        scored["escalation_before"],
+    )
 
-    response = {
-        "risk_score": result["risk_score"],
-        "above_threshold": result["above_threshold"],
-        "top_factors": result["top_factors"],
-        "escalation_before": escalation_before,
-        "decision": decision,
-        "verdict_id": verdict_id,
-    }
+    response = _score_response(scored)
     if idempotency_key is not None:
         _idempotency_cache.put(idempotency_key, response)
     return response
@@ -427,52 +506,19 @@ def score_custom(
     # feature on a replayed historical transaction.
     txn = req.model_dump(exclude={"attach_to_entity_id"}, exclude_none=True)
 
-    explainer = get_explainer()
-    result = explainer.score_transaction(txn)
+    # Same scoring path /api/score uses — a custom transaction can never
+    # gate itself differently than a replayed one.
+    scored = _scoring_service().score_and_decide(txn, req.attach_to_entity_id)
 
-    if req.attach_to_entity_id:
-        escalation_before = _memory.get_escalation_state(req.attach_to_entity_id)
-    else:
-        escalation_before = _compute_escalation_state(None, [])
-    thresholds = get_decision_thresholds()
-
-    # Same decide_action()/baseline pipeline /api/score uses — a custom
-    # transaction can never gate itself differently than a replayed one.
-    decision = decide_action(result["risk_score"], escalation_before, thresholds["review"], thresholds["block"])
-    baseline_decision = decide_action(result["risk_score"], {"state": "NORMAL"}, thresholds["review"], thresholds["block"])
-
-    if req.attach_to_entity_id:
-        _memory.record_verdict(req.attach_to_entity_id, decision["action"], result["risk_score"])
-
-    verdict_id = str(uuid.uuid4())
-    _explanations_cache.put(verdict_id, {"status": "pending"})
     background_tasks.add_task(
-        _generate_explanation, verdict_id, result["risk_score"], result["top_factors"], escalation_before
+        _generate_explanation,
+        scored["verdict_id"],
+        scored["risk_score"],
+        scored["top_factors"],
+        scored["escalation_before"],
     )
 
-    if decision["action"] != "ALLOW":
-        _review_queue.add({
-            "verdict_id": verdict_id,
-            "entity_id": req.attach_to_entity_id or "custom-transaction",
-            "txn_index": 0,
-            "risk_score": result["risk_score"],
-            "decision": decision,
-            "baseline_decision": baseline_decision,
-            "escalated_due_to_history": decision["escalated_due_to_history"],
-            "disposition": None,
-            "disposed_at": None,
-            "created_at": _now_iso(),
-            "notes": [],
-        })
-
-    return {
-        "risk_score": result["risk_score"],
-        "above_threshold": result["above_threshold"],
-        "top_factors": result["top_factors"],
-        "escalation_before": escalation_before,
-        "decision": decision,
-        "verdict_id": verdict_id,
-    }
+    return _score_response(scored)
 
 
 @router.get("/api/explanations/{verdict_id}")

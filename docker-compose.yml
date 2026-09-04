@@ -35,6 +35,24 @@ services:
       redis:
         condition: service_healthy
 
+  # Scores transaction events published by POST /api/events/transaction.
+  # Same image as the backend, different command — it must run the exact
+  # same scoring code (src/scoring_service.py), not a copy of it. Scale
+  # with `docker compose up --scale consumer=3`: they share one consumer
+  # group, so work is split rather than duplicated.
+  consumer:
+    build: .
+    command: ["python", "-m", "src.stream_consumer"]
+    environment:
+      GEMINI_API_KEY: ${GEMINI_API_KEY:-}
+      REDIS_URL: redis://redis:6379/0
+    volumes:
+      - ./models:/app/models
+      - ./data:/app/data
+    depends_on:
+      redis:
+        condition: service_healthy
+
   frontend:
     build:
       context: ./frontend

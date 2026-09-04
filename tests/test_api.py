@@ -3,7 +3,10 @@ Route coverage for api/main.py using FastAPI's TestClient against the
 fully-faked app from conftest.py (fake sample data, fake explainer, fake
 LLM agent) — no trained model, no dataset, no GEMINI_API_KEY needed.
 """
-from api.main import decide_action
+# Imported from the module that owns it rather than via api.main: the
+# scoring logic now lives in src/scoring_service.py, so api/main.py no
+# longer imports decide_action at all.
+from decision_rules import decide_action
 
 
 class TestDecideAction:
@@ -715,6 +718,155 @@ class TestCostAnalysis:
         r = client.get("/api/cost-analysis", headers=auth_headers)
 
         assert r.json()["roc_auc"] is None
+
+
+class TestTransactionEventIngestion:
+    """POST /api/events/transaction — the webhook-shaped entry point.
+
+    The endpoint must accept and return fast without scoring: scoring
+    happens in src/stream_consumer.py, off the stream.
+    """
+
+    def _redis_backed(self, monkeypatch):
+        """Swap the app's Redis client (normally None in tests) for a fake
+        one, plus a dedup cache backed by it."""
+        import api.main as main
+        import fakeredis
+        from redis_utils import KeyedCache
+
+        client = fakeredis.FakeRedis(decode_responses=True)
+        monkeypatch.setattr(main, "_redis_client", client)
+        monkeypatch.setattr(
+            main,
+            "_event_dedup_cache",
+            KeyedCache(client, prefix="riskmgr:events:seen", ttl_seconds=60),
+        )
+        return client
+
+    def _payload(self, event_id="evt-1", **overrides):
+        return {"event_id": event_id, "TransactionAmt": 100.0, "entity_id": "entity-a", **overrides}
+
+    def test_accepts_an_event_with_202_and_a_pollable_verdict_id(self, client, auth_headers, monkeypatch):
+        self._redis_backed(monkeypatch)
+
+        r = client.post("/api/events/transaction", json=self._payload(), headers=auth_headers)
+
+        assert r.status_code == 202
+        body = r.json()
+        assert body["event_id"] == "evt-1"
+        assert body["verdict_id"]
+        assert body["status"] == "accepted"
+        assert body["duplicate"] is False
+
+    def test_the_event_is_published_to_the_stream_not_scored_inline(self, client, auth_headers, monkeypatch):
+        import event_stream
+
+        redis_client = self._redis_backed(monkeypatch)
+
+        r = client.post("/api/events/transaction", json=self._payload(), headers=auth_headers)
+
+        queued = event_stream.read_events(redis_client, "test", block_ms=0)
+        assert len(queued) == 1
+        event = queued[0][1]
+        assert event["event_id"] == "evt-1"
+        assert event["entity_id"] == "entity-a"
+        assert event["transaction"]["TransactionAmt"] == 100.0
+        # The verdict_id handed to the caller is the one queued, so the
+        # caller can poll for exactly this event's result.
+        assert event["verdict_id"] == r.json()["verdict_id"]
+
+    def test_a_replayed_event_id_produces_no_second_verdict_or_stream_entry(
+        self, client, auth_headers, monkeypatch
+    ):
+        import event_stream
+
+        redis_client = self._redis_backed(monkeypatch)
+
+        first = client.post("/api/events/transaction", json=self._payload(), headers=auth_headers)
+        second = client.post("/api/events/transaction", json=self._payload(), headers=auth_headers)
+
+        assert second.status_code == 202
+        assert second.json()["duplicate"] is True
+        # Same verdict_id back, and only one message on the stream.
+        assert second.json()["verdict_id"] == first.json()["verdict_id"]
+        assert event_stream.stream_depth(redis_client)["length"] == 1
+
+    def test_distinct_event_ids_are_both_accepted(self, client, auth_headers, monkeypatch):
+        import event_stream
+
+        redis_client = self._redis_backed(monkeypatch)
+
+        client.post("/api/events/transaction", json=self._payload("evt-a"), headers=auth_headers)
+        client.post("/api/events/transaction", json=self._payload("evt-b"), headers=auth_headers)
+
+        assert event_stream.stream_depth(redis_client)["length"] == 2
+
+    def test_returns_503_rather_than_pretending_to_queue_without_redis(self, client, auth_headers):
+        # The app's default in tests is no Redis client at all.
+        r = client.post("/api/events/transaction", json=self._payload(), headers=auth_headers)
+
+        assert r.status_code == 503
+        assert "requires Redis" in r.json()["detail"]
+
+    def test_requires_an_api_key(self, client):
+        r = client.post("/api/events/transaction", json=self._payload())
+        assert r.status_code == 401
+
+    def test_rejects_a_payload_with_no_event_id(self, client, auth_headers, monkeypatch):
+        self._redis_backed(monkeypatch)
+
+        r = client.post(
+            "/api/events/transaction", json={"TransactionAmt": 100.0}, headers=auth_headers
+        )
+
+        assert r.status_code == 422
+
+    def test_entity_id_is_optional(self, client, auth_headers, monkeypatch):
+        self._redis_backed(monkeypatch)
+
+        r = client.post(
+            "/api/events/transaction",
+            json={"event_id": "evt-no-entity", "TransactionAmt": 100.0},
+            headers=auth_headers,
+        )
+
+        assert r.status_code == 202
+
+
+class TestDeadLetterEndpoint:
+    def test_lists_dead_lettered_events(self, client, auth_headers, monkeypatch):
+        import api.main as main
+        import event_stream
+        import fakeredis
+
+        redis_client = fakeredis.FakeRedis(decode_responses=True)
+        monkeypatch.setattr(main, "_redis_client", redis_client)
+        event_stream.ensure_group(redis_client)
+        message_id = event_stream.publish_event(redis_client, {"event_id": "evt-dead"})
+        event_stream.read_events(redis_client, "c", block_ms=0)
+        event_stream.dead_letter(redis_client, {"event_id": "evt-dead"}, "boom", message_id)
+
+        r = client.get("/api/events/dead-letter", headers=auth_headers)
+
+        assert r.status_code == 200
+        items = r.json()["items"]
+        assert len(items) == 1
+        assert items[0]["event"]["event_id"] == "evt-dead"
+        assert items[0]["error"] == "boom"
+
+    def test_is_empty_when_nothing_has_failed(self, client, auth_headers, monkeypatch):
+        import api.main as main
+        import fakeredis
+
+        monkeypatch.setattr(main, "_redis_client", fakeredis.FakeRedis(decode_responses=True))
+
+        assert client.get("/api/events/dead-letter", headers=auth_headers).json()["items"] == []
+
+    def test_returns_503_without_redis(self, client, auth_headers):
+        assert client.get("/api/events/dead-letter", headers=auth_headers).status_code == 503
+
+    def test_requires_an_api_key(self, client):
+        assert client.get("/api/events/dead-letter").status_code == 401
 
 
 class TestEscalationAblation:
