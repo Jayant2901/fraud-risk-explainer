@@ -3,15 +3,17 @@ import CostAnalysis from "./CostAnalysis";
 import EscalationAblation from "./EscalationAblation";
 import ColdStartAnalysis from "./ColdStartAnalysis";
 import ConsistencyAnalysis from "./ConsistencyAnalysis";
+import ShadowScoring from "./ShadowScoring";
 import { focusRing, typeScale } from "../theme";
 
-type SectionId = "cost" | "escalation" | "cold-start" | "consistency";
+type SectionId = "cost" | "escalation" | "cold-start" | "consistency" | "shadow";
 
 const SECTIONS: { id: SectionId; label: string; Panel: ComponentType }[] = [
   { id: "cost", label: "Cost-Optimal Threshold, Sensitivity & Drift", Panel: CostAnalysis },
   { id: "escalation", label: "Entity Escalation Ablation", Panel: EscalationAblation },
   { id: "cold-start", label: "Cold-Start Graph Features", Panel: ColdStartAnalysis },
   { id: "consistency", label: "Consistency", Panel: ConsistencyAnalysis },
+  { id: "shadow", label: "Shadow Model Comparison", Panel: ShadowScoring },
 ];
 
 // Every analysis this app can show, in one place — nothing here is new
@@ -36,9 +38,9 @@ export default function ModelValidation() {
         <h2 className={typeScale.sectionTitle}>Model Validation</h2>
         <p className={`${typeScale.body} mt-1 max-w-2xl`}>
           Every offline analysis this project ran to check its own claims, in one place — cost
-          modeling, entity escalation, cold-start coverage, temporal drift, and LLM
-          self-consistency. Nothing here is deleted or hidden, just consolidated so Live Scoring
-          and Review Queue can stay the two tabs you see first.
+          modeling, entity escalation, cold-start coverage, temporal drift, LLM
+          self-consistency, and live shadow-model comparison. Nothing here is deleted or hidden,
+          just consolidated so Live Scoring and Review Queue can stay the two tabs you see first.
         </p>
       </div>
 

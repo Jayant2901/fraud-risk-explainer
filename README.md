@@ -505,7 +505,8 @@ risk-manager/
         │   ├── CostAnalysis.tsx (+ .test.tsx)     <- cost threshold, sensitivity, drift
         │   ├── EscalationAblation.tsx (+ .test.tsx)
         │   ├── ColdStartAnalysis.tsx (+ .test.tsx)
-        │   └── ConsistencyAnalysis.tsx (+ .test.tsx)
+        │   ├── ConsistencyAnalysis.tsx (+ .test.tsx)
+        │   └── ShadowScoring.tsx (+ .test.tsx)
         ├── test/setup.ts
         └── App.tsx
 ```
@@ -917,6 +918,44 @@ async path, so no scoring route is blind to it).
 - **Diagnosable, not silent:** `GET /api/health` reports
   `escalation_alerts.webhook_configured` so "why did nobody get paged"
   has an answer besides reading source.
+
+## Shadow scoring: evaluating a candidate model before promoting it
+
+`--compare`'s retrain-and-diff (above) tells you whether feedback rows
+moved offline metrics. It doesn't tell you whether a candidate model
+would have decided *these specific real transactions* differently — and
+by the time you'd notice that from a metrics drift, it already shipped.
+`src/shadow_scoring.py` closes that gap: point `SHADOW_MODEL_PATH` at a
+candidate model file, and every transaction the live model scores is
+also scored by the candidate, silently, on the same features, under the
+same escalation state and thresholds — the only thing allowed to differ
+is the two models' risk scores.
+
+- **Never gates anything, never explains anything.** The candidate's
+  score never reaches `decide_action()` for the real decision, and it's
+  never SHAP-explained — deliberately: SHAP is the expensive part of
+  scoring (a `TreeExplainer` construction plus a `shap_values()` call
+  per transaction), and a shadow model's whole point is "would the
+  *decision* differ," which needs only a risk score. Paying SHAP's cost
+  twice per request for a feature the live request never sees the result
+  of would burn exactly the latency budget this README already holds
+  the LLM to (see below) — for a candidate model that, being unvetted,
+  deserves *less* trust with that budget than the LLM gets, not equal.
+- **A broken candidate can't break scoring.** Wrapped in the same
+  try/except discipline as everything else on the scoring path — an
+  exception loading or running the candidate model is logged and
+  swallowed, never raised to the caller.
+- **`GET /api/shadow-comparison`** reports total scored, overall
+  agreement rate, and a breakdown by `(live_action, shadow_action)` pair
+  — surfaced in the Model Validation tab's "Shadow Model Comparison"
+  panel. Unset `SHADOW_MODEL_PATH`: the same shape, `configured: false`,
+  explaining what to set.
+- Counts are shared across the API and `src/stream_consumer.py` (both
+  score through `ScoringService`) when Redis is configured — the same
+  dual-backend pattern as `circuit_breaker.py` — and in-process,
+  resetting on restart, otherwise. That's the intended tradeoff:
+  shadow-model evaluation is something a person runs deliberately for a
+  candidate model, not user-facing data that must survive indefinitely.
 
 ## Does the cost-optimal threshold hold up under different cost assumptions?
 

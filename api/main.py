@@ -71,6 +71,7 @@ from circuit_breaker import CircuitBreaker
 from feature_store import create_feature_store, seed_from_history
 from notifications import create_notifier
 from domain_metrics import register_domain_state_collector
+from shadow_scoring import create_shadow_scorer, create_shadow_comparison
 from feedback_export import export_feedback, to_json_summary
 import event_stream
 
@@ -219,6 +220,13 @@ _notifier = create_notifier(_redis_client)
 # module is fully loaded.
 register_domain_state_collector(_review_queue, lambda: get_agent().breaker.state())
 
+# A candidate model (SHADOW_MODEL_PATH) scores every transaction silently
+# alongside the live one, so its decisions can be compared before anyone
+# promotes it. None/no-op until that env var is set — see
+# src/shadow_scoring.py and GET /api/shadow-comparison below.
+_shadow_scorer = create_shadow_scorer()
+_shadow_comparison = create_shadow_comparison(_redis_client)
+
 
 def _generate_explanation(verdict_id: str, risk_score: float, top_factors: list, escalation: dict):
     """Background task. Streams the LLM response, publishing each delta to
@@ -305,6 +313,8 @@ def _scoring_service() -> ScoringService:
         thresholds_provider=get_decision_thresholds,
         feature_store=_feature_store,
         notifier=_notifier,
+        shadow_scorer=_shadow_scorer,
+        shadow_comparison=_shadow_comparison,
     )
 
 
@@ -929,6 +939,23 @@ def get_cold_start_analysis():
         return {"report": f.read(), "message": None}
 
 
+@router.get("/api/shadow-comparison")
+def get_shadow_comparison():
+    """How often would SHADOW_MODEL_PATH's decision have differed from
+    the one that actually shipped, on the transactions scored since this
+    process started (or since Redis-backed counts were last reset)."""
+    if _shadow_scorer is None:
+        return {
+            "configured": False,
+            "total_scored": 0,
+            "agreement_rate": None,
+            "action_pairs": [],
+            "message": "No shadow model configured — set SHADOW_MODEL_PATH to compare a "
+                       "candidate model against live decisions before promoting it.",
+        }
+    return {**_shadow_comparison.summary(), "message": None}
+
+
 @app.get("/api/health")
 def health():
     """Liveness plus the state of the one dependency that can degrade
@@ -956,6 +983,7 @@ def health():
         "escalation_alerts": {
             "webhook_configured": bool(os.environ.get("ESCALATION_WEBHOOK_URL")),
         },
+        "shadow_scoring": {"configured": _shadow_scorer is not None},
     }
 
 

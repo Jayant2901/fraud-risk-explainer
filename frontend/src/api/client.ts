@@ -217,6 +217,24 @@ export interface EscalationAblationResult {
   message: string | null;
 }
 
+export interface ShadowActionPair {
+  live_action: string;
+  shadow_action: string;
+  count: number;
+}
+
+// GET /api/shadow-comparison — how often a candidate model
+// (SHADOW_MODEL_PATH) would have decided differently from the model
+// actually in production, on transactions scored since the process (or
+// the shared Redis counters) last reset.
+export interface ShadowComparison {
+  configured: boolean;
+  total_scored: number;
+  agreement_rate: number | null;
+  action_pairs: ShadowActionPair[];
+  message: string | null;
+}
+
 export interface ReviewQueueMetrics {
   total_disposed: number;
   confirmed_fraud_count: number;
@@ -315,4 +333,5 @@ export const api = {
   consistencyAnalysis: () => request<ConsistencyAnalysisResult>("/consistency-analysis"),
   escalationAblation: () => request<EscalationAblationResult>("/escalation-ablation"),
   coldStartAnalysis: () => request<TextReportResult>("/cold-start-analysis"),
+  shadowComparison: () => request<ShadowComparison>("/shadow-comparison"),
 };

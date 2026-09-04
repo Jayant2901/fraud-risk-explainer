@@ -12,6 +12,7 @@ vi.mock("../api/client", () => ({
     escalationAblation: vi.fn(),
     coldStartAnalysis: vi.fn(),
     consistencyAnalysis: vi.fn(),
+    shadowComparison: vi.fn(),
   },
 }));
 
@@ -34,6 +35,10 @@ function mockAllReports() {
   mockedApi.escalationAblation.mockResolvedValue({ report: null, summary: null, message: "No ablation report yet" });
   mockedApi.coldStartAnalysis.mockResolvedValue({ report: null, message: "No cold-start report yet" });
   mockedApi.consistencyAnalysis.mockResolvedValue({ consistency: null, message: "No consistency report yet" });
+  mockedApi.shadowComparison.mockResolvedValue({
+    configured: false, total_scored: 0, agreement_rate: null, action_pairs: [],
+    message: "No shadow model configured",
+  });
 }
 
 describe("ModelValidation", () => {
@@ -46,6 +51,7 @@ describe("ModelValidation", () => {
     expect(screen.getByRole("button", { name: /Entity Escalation Ablation/i })).toBeInTheDocument();
     expect(screen.getByRole("button", { name: /Cold-Start Graph Features/i })).toBeInTheDocument();
     expect(screen.getByRole("button", { name: /^Consistency/i })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: /Shadow Model Comparison/i })).toBeInTheDocument();
   });
 
   it("has the cost section open by default and fetches its data", async () => {

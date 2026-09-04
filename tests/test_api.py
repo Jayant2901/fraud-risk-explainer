@@ -1193,6 +1193,73 @@ class TestEscalationAlerts:
         assert sent == []
 
 
+class TestShadowComparison:
+    """FakeExplainer (conftest.py) returns risk_score=42.0 -> REVIEW for
+    an unescalated entity, so a FakeShadowScorer forced to a different
+    band gives a deterministic disagreement to assert on."""
+
+    class FakeShadowScorer:
+        def __init__(self, risk_score: float):
+            self.risk_score = risk_score
+
+        def score(self, txn: dict) -> float:
+            return self.risk_score
+
+    def test_unconfigured_by_default(self, client, auth_headers):
+        body = client.get("/api/shadow-comparison", headers=auth_headers).json()
+
+        assert body["configured"] is False
+        assert body["total_scored"] == 0
+        assert body["agreement_rate"] is None
+        assert "SHADOW_MODEL_PATH" in body["message"]
+
+    def test_agreeing_shadow_decision_is_recorded(self, client, auth_headers, monkeypatch):
+        import api.main as main
+        from shadow_scoring import ShadowComparison
+
+        monkeypatch.setattr(main, "_shadow_scorer", self.FakeShadowScorer(45.0))  # also REVIEW
+        monkeypatch.setattr(main, "_shadow_comparison", ShadowComparison())
+
+        client.post("/api/score", json={"entity_id": "entity-a", "txn_index": 0}, headers=auth_headers)
+
+        body = client.get("/api/shadow-comparison", headers=auth_headers).json()
+        assert body["configured"] is True
+        assert body["total_scored"] == 1
+        assert body["agreement_rate"] == 1.0
+        assert body["action_pairs"] == [{"live_action": "REVIEW", "shadow_action": "REVIEW", "count": 1}]
+
+    def test_disagreeing_shadow_decision_is_recorded(self, client, auth_headers, monkeypatch):
+        import api.main as main
+        from shadow_scoring import ShadowComparison
+
+        monkeypatch.setattr(main, "_shadow_scorer", self.FakeShadowScorer(5.0))  # ALLOW, live is REVIEW
+        monkeypatch.setattr(main, "_shadow_comparison", ShadowComparison())
+
+        client.post("/api/score", json={"entity_id": "entity-a", "txn_index": 0}, headers=auth_headers)
+
+        body = client.get("/api/shadow-comparison", headers=auth_headers).json()
+        assert body["total_scored"] == 1
+        assert body["agreement_rate"] == 0.0
+        assert body["action_pairs"] == [{"live_action": "REVIEW", "shadow_action": "ALLOW", "count": 1}]
+
+    def test_a_broken_shadow_model_never_fails_the_real_scoring_request(self, client, auth_headers, monkeypatch):
+        import api.main as main
+
+        class ExplodingShadowScorer:
+            def score(self, txn):
+                raise RuntimeError("candidate model is broken")
+
+        monkeypatch.setattr(main, "_shadow_scorer", ExplodingShadowScorer())
+
+        r = client.post("/api/score", json={"entity_id": "entity-a", "txn_index": 0}, headers=auth_headers)
+
+        assert r.status_code == 200
+        assert r.json()["decision"]["action"] == "REVIEW"
+
+    def test_requires_an_api_key(self, client):
+        assert client.get("/api/shadow-comparison").status_code == 401
+
+
 class TestDeadLetterEndpoint:
     def test_lists_dead_lettered_events(self, client, auth_headers, monkeypatch):
         import api.main as main

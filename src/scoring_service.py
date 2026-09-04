@@ -84,7 +84,7 @@ class ScoringService:
     """
 
     def __init__(self, explainer, memory, review_queue, explanations_cache, thresholds_provider,
-                 feature_store=None, notifier=None):
+                 feature_store=None, notifier=None, shadow_scorer=None, shadow_comparison=None):
         self._explainer = explainer
         self._memory = memory
         self._review_queue = review_queue
@@ -98,6 +98,11 @@ class ScoringService:
         # entity's escalation state before/after this verdict is recorded
         # — see src/notifications.py for what counts as alert-worthy.
         self._notifier = notifier
+        # Both optional, both or neither: a candidate model scores the
+        # same transaction silently and its agreement with the live
+        # decision is recorded — see src/shadow_scoring.py.
+        self._shadow_scorer = shadow_scorer
+        self._shadow_comparison = shadow_comparison
         # A callable rather than a dict: api/main.py resolves thresholds
         # through an lru_cache'd getter that tests monkeypatch, and this
         # has to keep seeing the patched value.
@@ -165,6 +170,19 @@ class ScoringService:
         )
 
         decisions_total.labels(action=decision["action"]).inc()
+
+        if self._shadow_scorer is not None and self._shadow_comparison is not None:
+            try:
+                shadow_score = self._shadow_scorer.score(txn)
+                shadow_decision = decide_action(
+                    shadow_score, escalation_before, thresholds["review"], thresholds["block"]
+                )
+                self._shadow_comparison.record(decision["action"], shadow_decision["action"])
+            except Exception:
+                # A candidate model under evaluation is expected to be
+                # less trustworthy than the live one — its failure must
+                # never touch the transaction actually being gated.
+                logger.exception("Shadow scoring failed", extra={"entity_id": entity_id})
 
         escalation_after = escalation_before
         if entity_id and record_verdict:
