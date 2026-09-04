@@ -35,6 +35,7 @@ from typing import Literal
 sys.path.append(os.path.join(os.path.dirname(__file__), "..", "src"))
 sys.path.append(os.path.dirname(__file__))
 
+from contextlib import asynccontextmanager
 from functools import lru_cache
 
 import pandas as pd
@@ -67,12 +68,21 @@ from impact_summary import extrapolate_monthly_savings
 from scoring_service import FALLBACK_VERDICT, ScoringService, generate_explanation
 from explanation_bus import ExplanationBus
 from circuit_breaker import CircuitBreaker
+from feature_store import create_feature_store, seed_from_history
 import event_stream
 
 configure_logging()
 logger = logging.getLogger(__name__)
 
-app = FastAPI(title="AI Risk Manager API")
+@asynccontextmanager
+async def lifespan(_app: FastAPI):
+    # Warm the online feature store before the first request. Deliberately
+    # a lifespan handler rather than the deprecated @app.on_event.
+    seed_feature_store()
+    yield
+
+
+app = FastAPI(title="AI Risk Manager API", lifespan=lifespan)
 
 app.add_middleware(
     CORSMiddleware,
@@ -188,6 +198,12 @@ _review_queue = create_review_queue(_redis_client)
 # worker holding the client's SSE connection — see src/explanation_bus.py.
 _explanation_bus = ExplanationBus(_redis_client)
 
+# Live entity/device aggregates, so a transaction is scored against the
+# history that exists NOW rather than the frozen training snapshot — see
+# src/feature_store.py.
+_feature_store = create_feature_store(_redis_client)
+_feature_store_seed = {"seeded_rows": 0}
+
 
 def _generate_explanation(verdict_id: str, risk_score: float, top_factors: list, escalation: dict):
     """Background task. Streams the LLM response, publishing each delta to
@@ -221,6 +237,31 @@ def _generate_explanation(verdict_id: str, risk_score: float, top_factors: list,
         _explanation_bus.publish(verdict_id, {"type": "complete", "verdict": ready["verdict"]})
 
 
+# Seeding walks the cached sample chronologically; this bounds the work
+# at startup. The sample is ~30 entities' worth of rows, so in practice
+# this is the whole thing.
+FEATURE_SEED_LIMIT = int(os.environ.get("FEATURE_SEED_LIMIT", "20000"))
+
+
+def seed_feature_store() -> None:
+    """Warm the online feature store from the historical sample so
+    entities aren't cold on first run.
+
+    Best-effort: a failure here (no dataset on disk, say) must not stop
+    the API from serving — scoring still works, entities just start with
+    empty history, and /api/health reports seeded_rows as 0 so that is
+    visible rather than silent.
+    """
+    if os.environ.get("SKIP_FEATURE_SEED"):
+        return
+    try:
+        _feature_store_seed.update(
+            seed_from_history(_feature_store, get_sample_data(), limit=FEATURE_SEED_LIMIT)
+        )
+    except Exception:
+        logger.warning("Could not seed the feature store from history", exc_info=True)
+
+
 def _score_response(scored: dict) -> dict:
     """The public shape of a scoring response. baseline_decision is used
     internally (review-queue metrics) but has never been part of this
@@ -247,6 +288,7 @@ def _scoring_service() -> ScoringService:
         review_queue=_review_queue,
         explanations_cache=_explanations_cache,
         thresholds_provider=get_decision_thresholds,
+        feature_store=_feature_store,
     )
 
 
@@ -869,7 +911,14 @@ def health():
         # it rather than 500-ing the health check.
         logger.warning("Could not read LLM breaker state", exc_info=True)
         llm = {"state": "unknown", "consecutive_failures": 0, "seconds_until_retry": 0.0}
-    return {"status": "ok", "llm": llm}
+    return {
+        "status": "ok",
+        "llm": llm,
+        # Seeded vs. live counts: a store that looks populated but was
+        # never seeded would score early transactions against empty
+        # history, and nothing else would show that.
+        "feature_store": {**_feature_store.stats(), **_feature_store_seed},
+    }
 
 
 app.include_router(router)

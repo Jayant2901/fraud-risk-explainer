@@ -31,6 +31,7 @@ sys.path.append(os.path.dirname(__file__))
 
 from decision_rules import load_decision_thresholds
 from entity_memory import create_entity_memory
+from feature_store import create_feature_store
 from event_stream import (
     MAX_DELIVERY_ATTEMPTS,
     ack,
@@ -181,6 +182,9 @@ def build_consumer(redis_client, consumer_name: str) -> EventConsumer:
         review_queue=create_review_queue(redis_client),
         explanations_cache=explanations_cache,
         thresholds_provider=lambda: thresholds,
+        # Shared with the API via Redis, so an entity's history is the
+        # same whichever process scores its next transaction.
+        feature_store=create_feature_store(redis_client),
     )
     return EventConsumer(
         redis_client=redis_client,

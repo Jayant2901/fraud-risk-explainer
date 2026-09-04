@@ -22,6 +22,7 @@ from datetime import datetime, timezone
 
 from decision_rules import decide_action
 from entity_memory import _compute_escalation_state
+from feature_store import fingerprint_for
 
 logger = logging.getLogger(__name__)
 
@@ -51,11 +52,17 @@ class ScoringService:
     after the decision is already final.
     """
 
-    def __init__(self, explainer, memory, review_queue, explanations_cache, thresholds_provider):
+    def __init__(self, explainer, memory, review_queue, explanations_cache, thresholds_provider,
+                 feature_store=None):
         self._explainer = explainer
         self._memory = memory
         self._review_queue = review_queue
         self._explanations_cache = explanations_cache
+        # Optional so a caller that only wants a decision (and every
+        # existing test) behaves exactly as before. When present, the
+        # transaction is scored against LIVE entity/device history rather
+        # than the frozen training snapshot — see src/feature_store.py.
+        self._feature_store = feature_store
         # A callable rather than a dict: api/main.py resolves thresholds
         # through an lru_cache'd getter that tests monkeypatch, and this
         # has to keep seeing the patched value.
@@ -79,7 +86,26 @@ class ScoringService:
             that entity's history. False for a hypothetical "what if"
             that must never pollute a real entity's trajectory.
         """
+        # --- Online features: READ, score, then RECORD ------------------
+        # This ordering is the correctness argument for the whole feature
+        # store. The features handed to the model must describe the
+        # entity's history STRICTLY BEFORE this transaction; recording
+        # first would let the transaction count itself, which is exactly
+        # the leakage the offline causal functions use shift(1) to avoid.
+        # tests/test_feature_store.py asserts the ordering directly.
+        fingerprint = None
+        if self._feature_store is not None:
+            fingerprint = fingerprint_for(txn)
+            txn = {**txn, **self._feature_store.features_for(entity_id, fingerprint)}
+
         result = self._explainer.score_transaction(txn)
+
+        if self._feature_store is not None:
+            # is_fraud is unknown at scoring time — the true label arrives
+            # later, from a reviewer disposition or a chargeback. The
+            # transaction counts toward volume now and toward fraud only
+            # once labelled (FeatureStore.apply_label).
+            self._feature_store.record(entity_id, fingerprint, is_fraud=None)
 
         if entity_id:
             escalation_before = self._memory.get_escalation_state(entity_id)

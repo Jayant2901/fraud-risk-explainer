@@ -510,6 +510,59 @@ risk-manager/
         └── App.tsx
 ```
 
+## Online features: what the model is actually scored against
+
+`add_causal_entity_history` and `add_causal_device_graph_features`
+compute history-dependent features over a static dataframe at
+training/evaluation time. The live path used to score a transaction
+against features derived from that frozen snapshot — so an entity's 40th
+transaction today was scored with graph features that did not include
+its 39th from ten minutes ago. The offline construction was correct and
+leakage-free; it simply had no online twin, which quietly made the live
+system less capable than the evaluation implied.
+
+`src/feature_store.py` maintains the same aggregates incrementally —
+per-entity transaction/fraud counts, and per-device distinct-entity
+counts and fraud rates — Redis-backed when configured so the API workers
+and the stream consumer share one view of an entity's history.
+
+**Offline/online equivalence is the acceptance criterion**, and it is
+asserted directly: ~1,000 chronologically-ordered transactions replayed
+one at a time through the online store, compared against what the batch
+functions produce for the same rows.
+
+| Feature | max abs. difference |
+|---|---|
+| `entity_prior_txn_count` | 0.0 |
+| `entity_prior_fraud_count` | 0.0 |
+| `entity_prior_fraud_rate` | 0.0 |
+| `shared_device_prior_entity_count` | 0.0 |
+| `shared_device_prior_fraud_rate` | 0.0 |
+
+Bit-identical, on both the in-process and Redis backends — not merely
+within tolerance.
+
+Two properties worth stating explicitly:
+
+- **Read before record.** Features must describe the entity's history
+  strictly *before* the transaction being scored. Recording first would
+  let a transaction count itself, which is the exact leakage the offline
+  functions use `shift(1)` to avoid. `ScoringService` enforces the order
+  in one place and a test asserts it.
+- **Labels arrive later than transactions.** Offline, every prior row's
+  `isFraud` is known. Online it is not — the true label comes from a
+  reviewer disposition or a chargeback, days later. So a transaction
+  counts toward volume immediately and toward fraud only once labelled
+  (`apply_label`). This is a real difference between the offline and
+  online feature distributions, not a bug, and the fraud-rate features
+  therefore lag in production in a way they cannot in backtest.
+
+Keys carry a 90-day TTL (`FEATURE_TTL_SECONDS`) so the store stays
+bounded, and `/api/health` reports entities/fingerprints tracked plus
+seeded row count — a store that looks populated but was never seeded
+would score early transactions against empty history, and nothing else
+would surface that.
+
 ## Latency budget: the LLM can never degrade the decision
 
 The decision path does not call the LLM — that has always been the

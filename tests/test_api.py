@@ -98,6 +98,16 @@ class TestHealth:
         # scoring is unaffected, so overall status stays ok.
         assert body["status"] == "ok"
 
+    def test_reports_feature_store_coverage(self, client):
+        """Seeded vs. live counts: a store that looks populated but was
+        never seeded would score early transactions against empty history,
+        and nothing else would surface that."""
+        body = client.get("/api/health").json()
+
+        assert "entities_tracked" in body["feature_store"]
+        assert "fingerprints_tracked" in body["feature_store"]
+        assert "seeded_rows" in body["feature_store"]
+
     def test_stays_up_when_the_agent_cannot_be_constructed(self, client, monkeypatch):
         import api.main as main
 
