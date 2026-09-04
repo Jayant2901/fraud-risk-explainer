@@ -1,8 +1,8 @@
-import { useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import { ApiError, api, type EscalationState, type ExplanationResult, type ScoreResult, type TxnSummary, type Verdict } from "../api/client";
 import { AlertTriangleIcon } from "./icons";
 import RiskGauge from "./RiskGauge";
-import { useAnimatedNumber } from "../hooks";
+import { partialExplanation, useAnimatedNumber } from "../hooks";
 import {
   accentBg,
   accentBorder,
@@ -51,15 +51,6 @@ function ExplanationView({
   const partial = partialExplanation(streamedText);
   if (!partial) return null;
   return <p className="text-sm text-app-ink">{partial}</p>;
-}
-
-// The model streams a JSON object, so mid-flight text looks like
-// `{"explanation": "The card ha`. This pulls out just the explanation
-// value so far, rather than showing the reader raw JSON.
-export function partialExplanation(raw: string): string {
-  const match = raw.match(/"explanation"\s*:\s*"((?:[^"\\]|\\.)*)/);
-  if (!match) return "";
-  return match[1].replace(/\\"/g, '"').replace(/\\n/g, " ").replace(/\\\\/g, "\\");
 }
 
 type Mode = "replay" | "custom";
@@ -145,6 +136,15 @@ export default function LiveScoring() {
   // One brief beat per escalated result, highlighting the tick the
   // entity's history pushed this transaction past. Fires once and
   // settles — never loops.
+  //
+  // Depends on `result` (not the flatter result?.verdict_id this used
+  // to key on) so the fields actually read in the body are declared —
+  // behaviorally identical, since a new verdict_id only ever arrives
+  // together with a new decision on the same setResult(r) call, never on
+  // its own. setEscalationBeat is a genuine synchronize-with-an-external-
+  // system case, not derivable state: it drives a real setTimeout, and
+  // "one beat per new verdict, then settle" needs that timer regardless
+  // of how the value is computed.
   useEffect(() => {
     if (!result?.decision.escalated_due_to_history) {
       setEscalationBeat(null);
@@ -153,7 +153,7 @@ export default function LiveScoring() {
     setEscalationBeat(result.decision.action === "BLOCK" ? "block" : "review");
     const timer = setTimeout(() => setEscalationBeat(null), 600);
     return () => clearTimeout(timer);
-  }, [result?.verdict_id]);
+  }, [result]);
 
   useEffect(() => {
     api
@@ -166,6 +166,11 @@ export default function LiveScoring() {
       .finally(() => setLoadingEntities(false));
   }, []);
 
+  // Fetches this entity's transactions/escalation from the API (an
+  // external system) whenever the selection changes; the setState calls
+  // ahead of that fetch (stop any active playback, clear the previous
+  // entity's result) are resetting local UI state for the entity switch
+  // that's about to happen, not values derivable from render.
   useEffect(() => {
     if (!selectedEntity) return;
     setPlaying(false);
@@ -191,6 +196,14 @@ export default function LiveScoring() {
   // the model actually produces it. One open connection, no polling
   // loop — GET /api/explanations/{id} remains as the fallback below for
   // clients behind a proxy that buffers event streams.
+  //
+  // Depends on `result` itself (the body reads result.verdict_id) rather
+  // than the narrower result?.verdict_id this used to key on — same
+  // reasoning as the escalation-beat effect above. Opening/tearing down
+  // an EventSource per verdict is a textbook synchronize-with-an-
+  // external-system effect; the setState calls inside (resetting
+  // explanation/streamedText, then writing in delta/complete events) are
+  // that synchronization, not state that could be derived at render time.
   useEffect(() => {
     if (!result) return;
     const verdictId = result.verdict_id;
@@ -264,7 +277,7 @@ export default function LiveScoring() {
       cancelled = true;
       source?.close();
     };
-  }, [result?.verdict_id]);
+  }, [result]);
 
   async function handleReset() {
     if (!selectedEntity) return;
@@ -276,7 +289,13 @@ export default function LiveScoring() {
     setExplanation(null);
   }
 
-  async function handleScore() {
+  // useCallback so the "replay at speed" effect below can depend on this
+  // directly (exhaustive-deps rightly flags reading it without
+  // declaring it) without that dependency changing on every render — its
+  // identity only changes with selectedEntity/txnIdx, both of which
+  // already gate that effect, so this is a no-op for its actual
+  // behavior, not a fix that changes when a tick fires.
+  const handleScore = useCallback(async () => {
     if (!selectedEntity) return;
     setScoring(true);
     setError(null);
@@ -290,7 +309,7 @@ export default function LiveScoring() {
     } finally {
       setScoring(false);
     }
-  }
+  }, [selectedEntity, txnIdx]);
 
   // "Replay at speed" demo mode: while playing, scores the current
   // transaction, then advances to the next one after a delay, until the
@@ -299,6 +318,16 @@ export default function LiveScoring() {
   // setInterval) so its closure always sees the current txnIdx/entity,
   // and pausing/unmounting/switching entities cleanly cancels the
   // pending tick via the effect's own cleanup — no leaked timers.
+  //
+  // The whole effect exists to manage that timer (a real external
+  // system) once playback is running; setPlaying(false) below when the
+  // sequence runs out is that same lifecycle ending itself, not a value
+  // that could be derived at render time — `playing` is the actual
+  // control flag read everywhere else in this component (button label,
+  // disabled state, ...), so turning it into a derived boolean here
+  // would spread this effect's stop condition across multiple call
+  // sites instead of settling it in the one place already responsible
+  // for the timer's lifecycle.
   useEffect(() => {
     if (!playing || !txns.length) return;
     if (txnIdx >= txns.length) {
@@ -316,7 +345,7 @@ export default function LiveScoring() {
       })();
     }, playIntervalMs(playSpeed));
     return () => clearTimeout(timer);
-  }, [playing, txnIdx, playSpeed, txns.length, selectedEntity]);
+  }, [playing, txnIdx, playSpeed, txns.length, selectedEntity, handleScore]);
 
   async function handleScoreCustom() {
     setScoring(true);

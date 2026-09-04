@@ -1,7 +1,8 @@
 import { fireEvent, render, screen } from "@testing-library/react";
 import { describe, expect, it, vi } from "vitest";
 
-import RiskGauge, { presetScores } from "./RiskGauge";
+import RiskGauge from "./RiskGauge";
+import { presetScores } from "../hooks";
 
 const REVIEW = 34;
 const BLOCK = 71;

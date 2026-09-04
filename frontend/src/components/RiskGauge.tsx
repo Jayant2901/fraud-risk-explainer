@@ -1,3 +1,4 @@
+import { presetScores } from "../hooks";
 import {
   actionForScore,
   actionStatus,
@@ -9,21 +10,6 @@ import {
   statusFillClass,
   typeScale,
 } from "../theme";
-
-// Preset scores for the interactive mode: the two real thresholds, their
-// midpoint, and a clear-allow / clear-block anchor either side. Derived
-// from the passed-in thresholds so this never drifts from the live
-// decision boundary.
-export function presetScores(reviewThreshold: number, blockThreshold: number): number[] {
-  const presets = [
-    10,
-    reviewThreshold,
-    Math.round((reviewThreshold + blockThreshold) / 2),
-    blockThreshold,
-    90,
-  ];
-  return [...new Set(presets)].sort((a, b) => a - b);
-}
 
 // Scores come back fractional (12.3), so don't round them to death —
 // one decimal, with a whole number staying whole.

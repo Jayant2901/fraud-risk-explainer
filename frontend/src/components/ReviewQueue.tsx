@@ -78,6 +78,9 @@ export default function ReviewQueue() {
     }
   }, []);
 
+  // Fetches from the API (an external system) on mount and whenever
+  // `refresh` itself is asked to run again — the standard React
+  // data-fetching effect, not state derivable from props/other state.
   useEffect(() => {
     refresh();
   }, [refresh]);

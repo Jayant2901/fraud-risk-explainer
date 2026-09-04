@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 
-import { partialExplanation } from "./LiveScoring";
+import { partialExplanation } from "../hooks";
 
 // The model streams a JSON object, so mid-flight the accumulated text is
 // a partially-written object. This is what keeps the reader from seeing
