@@ -6,6 +6,7 @@ Wraps the trained model + SHAP so we can, for a single transaction:
 We never hand raw SHAP arrays to the LLM — we hand it a small, clean
 list of (feature, value, contribution, human_label) tuples.
 """
+import hashlib
 import joblib
 import shap
 import pandas as pd
@@ -56,10 +57,25 @@ def human_label(feature: str) -> str:
     return feature
 
 
+def _model_version(model_path: str) -> str:
+    """A short content hash of the model FILE (not the in-memory object),
+    used to tag every audit-log entry (src/audit_log.py) with exactly
+    which model produced it. Real versioning, not a static string: it
+    changes the moment train_model.py overwrites models/risk_model.joblib
+    with a retrained model, with no separate bump-the-version-number step
+    to forget."""
+    try:
+        with open(model_path, "rb") as f:
+            return hashlib.sha256(f.read()).hexdigest()[:12]
+    except OSError:
+        return "unknown"
+
+
 class RiskExplainer:
     def __init__(self, model_path: str = MODEL_PATH, features_path: str = FEATURES_PATH,
                  threshold_path: str = THRESHOLD_PATH, categories_path: str = CATEGORIES_PATH):
         self.model = joblib.load(model_path)
+        self.model_version = _model_version(model_path)
         self.feature_cols = joblib.load(features_path)
         try:
             self.threshold = joblib.load(threshold_path)

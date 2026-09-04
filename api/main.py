@@ -72,6 +72,7 @@ from feature_store import create_feature_store, seed_from_history
 from notifications import create_notifier
 from domain_metrics import register_domain_state_collector
 from shadow_scoring import create_shadow_scorer, create_shadow_comparison
+from audit_log import create_audit_log
 from feedback_export import export_feedback, to_json_summary
 import event_stream
 
@@ -227,6 +228,12 @@ register_domain_state_collector(_review_queue, lambda: get_agent().breaker.state
 _shadow_scorer = create_shadow_scorer()
 _shadow_comparison = create_shadow_comparison(_redis_client)
 
+# Immutable, hash-chained record of every verdict — always on, local-file
+# backed by default (data/audit_log.jsonl), Redis-backed (shared with
+# src/stream_consumer.py, compare-and-swap under concurrent writers) when
+# configured. See src/audit_log.py and `python -m src.audit verify`.
+_audit_log = create_audit_log(_redis_client)
+
 
 def _generate_explanation(verdict_id: str, risk_score: float, top_factors: list, escalation: dict):
     """Background task. Streams the LLM response, publishing each delta to
@@ -315,6 +322,7 @@ def _scoring_service() -> ScoringService:
         notifier=_notifier,
         shadow_scorer=_shadow_scorer,
         shadow_comparison=_shadow_comparison,
+        audit_log=_audit_log,
     )
 
 
@@ -956,6 +964,21 @@ def get_shadow_comparison():
     return {**_shadow_comparison.summary(), "message": None}
 
 
+@router.get("/api/audit/{verdict_id}")
+def get_audit_entry(verdict_id: str):
+    """The immutable record ScoringService wrote for this verdict — see
+    src/audit_log.py. Distinct from GET /api/explanations/{verdict_id}
+    (the LLM's explanation, best-effort and re-generatable) and GET
+    /api/review-queue/{verdict_id} (the reviewer workflow state, which
+    changes as a human disposes it): this is what the system actually
+    decided, at the moment it decided it, and its hash chain is what
+    makes that claim checkable rather than just asserted."""
+    entry = _audit_log.get(verdict_id)
+    if entry is None:
+        raise HTTPException(status_code=404, detail="No audit entry for this verdict_id")
+    return entry
+
+
 @app.get("/api/health")
 def health():
     """Liveness plus the state of the one dependency that can degrade
@@ -984,6 +1007,11 @@ def health():
             "webhook_configured": bool(os.environ.get("ESCALATION_WEBHOOK_URL")),
         },
         "shadow_scoring": {"configured": _shadow_scorer is not None},
+        # Not an entry count: entries() reads the whole log (a file scan
+        # locally, an LRANGE 0 -1 in Redis) — fine for GET
+        # /api/audit/{verdict_id} and `python -m src.audit verify`, too
+        # expensive to pay on every liveness probe.
+        "audit_log": {"backend": "redis" if _redis_client is not None else "local_file"},
     }
 
 

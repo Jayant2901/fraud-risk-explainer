@@ -1260,6 +1260,57 @@ class TestShadowComparison:
         assert client.get("/api/shadow-comparison").status_code == 401
 
 
+class TestAuditLog:
+    def test_a_scored_verdict_has_a_matching_audit_entry(self, client, auth_headers):
+        score_resp = client.post(
+            "/api/score", json={"entity_id": "entity-a", "txn_index": 0}, headers=auth_headers
+        )
+        verdict_id = score_resp.json()["verdict_id"]
+
+        body = client.get(f"/api/audit/{verdict_id}", headers=auth_headers).json()
+
+        assert body["verdict_id"] == verdict_id
+        assert body["entity_id"] == "entity-a"
+        assert body["action"] == score_resp.json()["decision"]["action"]
+        assert body["risk_score"] == score_resp.json()["risk_score"]
+        assert "hash" in body
+        assert "prev_hash" in body
+
+    def test_unknown_verdict_id_returns_404(self, client, auth_headers):
+        r = client.get("/api/audit/does-not-exist", headers=auth_headers)
+        assert r.status_code == 404
+
+    def test_consecutive_verdicts_chain_onto_each_other(self, client, auth_headers):
+        first = client.post(
+            "/api/score", json={"entity_id": "entity-a", "txn_index": 0}, headers=auth_headers
+        ).json()["verdict_id"]
+        second = client.post(
+            "/api/score", json={"entity_id": "entity-b", "txn_index": 0}, headers=auth_headers
+        ).json()["verdict_id"]
+
+        first_entry = client.get(f"/api/audit/{first}", headers=auth_headers).json()
+        second_entry = client.get(f"/api/audit/{second}", headers=auth_headers).json()
+
+        assert second_entry["prev_hash"] == first_entry["hash"]
+
+    def test_a_broken_audit_log_never_fails_the_real_scoring_request(self, client, auth_headers, monkeypatch):
+        import api.main as main
+
+        class ExplodingAuditLog:
+            def append(self, event):
+                raise RuntimeError("disk is full")
+
+        monkeypatch.setattr(main, "_audit_log", ExplodingAuditLog())
+
+        r = client.post("/api/score", json={"entity_id": "entity-a", "txn_index": 0}, headers=auth_headers)
+
+        assert r.status_code == 200
+        assert r.json()["decision"]["action"] == "REVIEW"
+
+    def test_requires_an_api_key(self, client):
+        assert client.get("/api/audit/some-id").status_code == 401
+
+
 class TestDeadLetterEndpoint:
     def test_lists_dead_lettered_events(self, client, auth_headers, monkeypatch):
         import api.main as main

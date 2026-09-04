@@ -957,6 +957,51 @@ is the two models' risk scores.
   shadow-model evaluation is something a person runs deliberately for a
   candidate model, not user-facing data that must survive indefinitely.
 
+## The audit trail: an immutable record of every verdict
+
+`review_queue.py` already tracks who confirmed or reversed a decision.
+What was missing is the decision itself: a record of every verdict this
+system ever produced that can't be quietly edited after the fact.
+`src/audit_log.py` appends one hash-chained entry per verdict — each
+entry's hash folds in the *previous* entry's hash, so altering,
+deleting, or reordering a past entry breaks the chain from that point
+on, verifiably, rather than silently.
+
+- **Always on.** Unlike the feedback loop, escalation alerts, and shadow
+  scoring above, there's nothing to opt into — `create_audit_log()`
+  always returns a working instance, local-file-backed
+  (`data/audit_log.jsonl`) with zero configuration required, so the
+  trail exists from the first verdict this system ever scores.
+- **`python -m src.audit verify`** walks the whole chain and reports
+  either `OK` or the exact entry where it breaks and why — a reordered
+  entry and an edited field both surface as a hash mismatch at the first
+  affected entry, which is what "tamper-evident" concretely means here.
+- **`GET /api/audit/{verdict_id}`** returns the stored entry — distinct
+  from `GET /api/explanations/{verdict_id}` (the LLM's explanation,
+  best-effort and re-generatable) and the review-queue item (workflow
+  state that changes as a reviewer disposes it): this is what the system
+  actually decided, at the moment it decided it.
+- **Model versioning:** every entry carries `model_version`, a short
+  content hash of `models/risk_model.joblib` itself (`src/risk_explainer
+  .py`'s `_model_version()`) — real versioning, not a string someone has
+  to remember to bump. It changes the moment `train_model.py` overwrites
+  the model file with a retrain, with no separate step to forget, so the
+  audit trail can always answer "which model produced this verdict."
+- **Local file vs. Redis** is a real fork, not just the usual
+  in-process/shared-state tradeoff: a single process only needs its own
+  sequencing to keep the chain in order, but the API and
+  `src/stream_consumer.py` can both be appending at the same instant, so
+  the Redis path uses `WATCH`/`MULTI` compare-and-swap on the last-entry
+  hash (retried on a conflicting concurrent writer) rather than a plain
+  atomic `RPUSH` — `tests/test_audit_log.py` proves this holds under real
+  concurrent threads racing against one Redis instance, not just
+  sequential calls.
+- **Never blocks or fails the request it's recording.** A failed audit
+  write is logged and swallowed, same discipline as everything else on
+  the scoring path — a verdict that failed to gate a transaction because
+  its *own logging* broke would be a worse failure than an occasional
+  missing log entry.
+
 ## Does the cost-optimal threshold hold up under different cost assumptions?
 
 `models/eval_report.txt` quotes one cost-optimal threshold (0.34) computed

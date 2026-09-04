@@ -84,7 +84,8 @@ class ScoringService:
     """
 
     def __init__(self, explainer, memory, review_queue, explanations_cache, thresholds_provider,
-                 feature_store=None, notifier=None, shadow_scorer=None, shadow_comparison=None):
+                 feature_store=None, notifier=None, shadow_scorer=None, shadow_comparison=None,
+                 audit_log=None):
         self._explainer = explainer
         self._memory = memory
         self._review_queue = review_queue
@@ -103,6 +104,10 @@ class ScoringService:
         # decision is recorded — see src/shadow_scoring.py.
         self._shadow_scorer = shadow_scorer
         self._shadow_comparison = shadow_comparison
+        # Optional for the same reason (every existing test keeps
+        # working unchanged); api/main.py always wires a real one — see
+        # src/audit_log.py.
+        self._audit_log = audit_log
         # A callable rather than a dict: api/main.py resolves thresholds
         # through an lru_cache'd getter that tests monkeypatch, and this
         # has to keep seeing the patched value.
@@ -226,6 +231,26 @@ class ScoringService:
                 "transaction_dt": _transaction_dt(txn),
                 "escalation_state": escalation_before.get("state"),
             })
+
+        if self._audit_log is not None:
+            try:
+                self._audit_log.append({
+                    "verdict_id": verdict_id,
+                    "entity_id": entity_id,
+                    "risk_score": risk_score,
+                    "action": decision["action"],
+                    "escalated_due_to_history": decision["escalated_due_to_history"],
+                    "escalation_state_before": escalation_before.get("state"),
+                    "escalation_state_after": escalation_after.get("state"),
+                    "model_version": getattr(self._explainer, "model_version", "unknown"),
+                    "record_verdict": record_verdict,
+                })
+            except Exception:
+                # A record that failed to write is not a broken chain —
+                # only a stored, verified entry is part of the chain at
+                # all — but it must still never fail the scoring request
+                # whose job is gating the transaction, not logging it.
+                logger.exception("Audit log append failed", extra={"verdict_id": verdict_id})
 
         return {
             "risk_score": risk_score,

@@ -105,6 +105,41 @@ class TestScoreTransaction:
         assert high["risk_score"] >= low["risk_score"]
 
 
+class TestModelVersion:
+    """model_version tags every audit-log entry (src/audit_log.py) with
+    exactly which model produced it — real content-based versioning, not
+    a string someone has to remember to bump."""
+
+    def test_is_a_short_hex_hash(self, trained_artifacts):
+        explainer = RiskExplainer(**trained_artifacts)
+        assert len(explainer.model_version) == 12
+        int(explainer.model_version, 16)  # raises ValueError if not hex
+
+    def test_is_stable_for_the_same_model_file(self, trained_artifacts):
+        a = RiskExplainer(**trained_artifacts)
+        b = RiskExplainer(**trained_artifacts)
+        assert a.model_version == b.model_version
+
+    def test_changes_when_the_model_file_changes(self, trained_artifacts, tmp_path):
+        import shutil
+        before = RiskExplainer(**trained_artifacts).model_version
+
+        # A different model file at the same path -- the scenario
+        # train_model.py produces on every retrain.
+        different_model_path = tmp_path / "other.joblib"
+        shutil.copy(trained_artifacts["model_path"], different_model_path)
+        with open(different_model_path, "ab") as f:
+            f.write(b"\x00")  # perturb the bytes without needing a second real model
+        after_artifacts = {**trained_artifacts, "model_path": str(different_model_path)}
+
+        after = RiskExplainer(**after_artifacts).model_version
+        assert after != before
+
+    def test_falls_back_to_unknown_if_the_model_file_is_missing(self, trained_artifacts):
+        from risk_explainer import _model_version
+        assert _model_version("/no/such/model.joblib") == "unknown"
+
+
 class TestHumanLabel:
     def test_known_feature_names_use_the_explicit_mapping(self):
         assert human_label("TransactionAmt") == "transaction amount"

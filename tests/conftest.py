@@ -55,13 +55,21 @@ def sample_df() -> pd.DataFrame:
 
 
 @pytest.fixture
-def client(monkeypatch, sample_df):
+def client(monkeypatch, sample_df, tmp_path):
     """A TestClient wired to a fully-faked app: real API_KEY auth (set to
     TEST_API_KEY), fake data/model/LLM so no trained model, dataset, or
     GEMINI_API_KEY is needed, and fresh shared state per test."""
     monkeypatch.setenv("API_KEY", TEST_API_KEY)
 
     import api.main as main
+    from audit_log import AuditLog
+
+    # The audit log is always-on and local-file-backed by default
+    # (src/audit_log.py) — every scored transaction in every test would
+    # otherwise append to the real data/audit_log.jsonl in the repo.
+    # Redirected to a per-test temp file so the suite still exercises the
+    # real local-file backend, just without polluting the working tree.
+    monkeypatch.setattr(main, "_audit_log", AuditLog(redis_client=None, log_path=str(tmp_path / "audit_log.jsonl")))
 
     main.get_sample_data.cache_clear()
     main.get_explainer.cache_clear()

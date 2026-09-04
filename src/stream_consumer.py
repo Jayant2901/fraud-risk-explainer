@@ -34,6 +34,7 @@ from entity_memory import create_entity_memory
 from feature_store import create_feature_store
 from notifications import create_notifier
 from shadow_scoring import create_shadow_scorer, create_shadow_comparison
+from audit_log import create_audit_log
 from event_stream import (
     MAX_DELIVERY_ATTEMPTS,
     ack,
@@ -198,6 +199,7 @@ def build_consumer(redis_client, consumer_name: str) -> EventConsumer:
         notifier=create_notifier(redis_client),
         shadow_scorer=create_shadow_scorer(),
         shadow_comparison=create_shadow_comparison(redis_client),
+        audit_log=create_audit_log(redis_client),
     )
     return EventConsumer(
         redis_client=redis_client,
