@@ -21,6 +21,7 @@ import uuid
 from datetime import datetime, timezone
 
 from decision_rules import decide_action
+from domain_metrics import decisions_total, escalation_transitions_total
 from entity_memory import _compute_escalation_state
 from feature_store import fingerprint_for
 
@@ -163,10 +164,17 @@ class ScoringService:
             risk_score, {"state": "NORMAL"}, thresholds["review"], thresholds["block"]
         )
 
+        decisions_total.labels(action=decision["action"]).inc()
+
         escalation_after = escalation_before
         if entity_id and record_verdict:
             self._memory.record_verdict(entity_id, decision["action"], risk_score)
             escalation_after = self._memory.get_escalation_state(entity_id)
+            if escalation_after.get("state") != escalation_before.get("state"):
+                escalation_transitions_total.labels(
+                    from_state=escalation_before.get("state") or "UNKNOWN",
+                    to_state=escalation_after.get("state") or "UNKNOWN",
+                ).inc()
 
         verdict_id = str(uuid.uuid4())
 

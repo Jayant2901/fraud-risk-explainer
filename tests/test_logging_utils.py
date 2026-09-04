@@ -123,3 +123,17 @@ class TestMetricsEndpoint:
         r = client.get("/metrics")
         assert "# HELP" in r.text
         assert "# TYPE" in r.text
+
+    def test_domain_metrics_appear_alongside_the_http_ones(self, client):
+        r = client.get("/metrics")
+        assert "riskmgr_review_queue_pending" in r.text
+        assert "riskmgr_llm_breaker_open" in r.text
+
+    def test_a_scored_transaction_is_reflected_in_the_decisions_counter(self, client, auth_headers):
+        client.post("/api/score", json={"entity_id": "entity-a", "txn_index": 0}, headers=auth_headers)
+
+        body = client.get("/metrics").text
+
+        # FakeExplainer (conftest.py) returns risk_score=42.0, which
+        # decide_action() turns into REVIEW for an unescalated entity.
+        assert 'riskmgr_decisions_total{action="REVIEW"}' in body

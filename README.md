@@ -870,6 +870,23 @@ shared across restarts/workers too.
   route. Deliberately not behind `verify_api_key`: Prometheus scraping
   conventions assume network-level access control, not an application
   key, and it's operational data, not customer data.
+- **Domain metrics** (`src/domain_metrics.py`) on the same endpoint:
+  `riskmgr_decisions_total{action}` and
+  `riskmgr_escalation_transitions_total{from_state,to_state}` (Counters,
+  incremented once per real event in `ScoringService`), plus
+  `riskmgr_review_queue_pending`, `riskmgr_review_precision{segment}` and
+  `riskmgr_llm_breaker_open` (a `Collector` queried live on every scrape
+  from the same sources `GET /api/review-queue/metrics` and `GET
+  /api/health` themselves read, so it can't drift from what those report).
+  `src/stream_consumer.py` — where real ingestion volume actually flows —
+  serves the same counters from its own `METRICS_PORT` (default 9101),
+  since that process has no other HTTP surface to piggyback on.
+- **`docker compose --profile observability up`** brings up Prometheus
+  (scraping both, `ops/prometheus.yml`) and Grafana, pre-provisioned with
+  a dashboard (`ops/grafana/`) — decision rate, escalation-transition
+  rate, queue depth, live reviewer precision, breaker state, HTTP rate/
+  latency. `http://localhost:3000`, anonymous viewer access enabled for
+  local use.
 
 ## Escalation alerting
 

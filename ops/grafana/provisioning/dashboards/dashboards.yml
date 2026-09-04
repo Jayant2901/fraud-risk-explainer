@@ -1,0 +1,10 @@
+# Auto-loads dashboards/risk-manager.json below on Grafana startup.
+apiVersion: 1
+
+providers:
+  - name: risk-manager
+    folder: ""
+    type: file
+    updateIntervalSeconds: 30
+    options:
+      path: /var/lib/grafana/dashboards

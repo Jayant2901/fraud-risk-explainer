@@ -65,6 +65,14 @@ STALE_CLAIM_IDLE_MS = 60_000
 BATCH_SIZE = 10
 BLOCK_MS = 5_000
 
+# The consumer scores transactions too — real ingestion volume mostly
+# flows through here, not the synchronous API — so its
+# riskmgr_decisions_total/riskmgr_escalation_transitions_total counters
+# (src/domain_metrics.py) need their own scrape target: this process
+# never otherwise serves HTTP. 0 disables it (e.g. under pytest, which
+# never calls main()).
+METRICS_PORT = int(os.environ.get("METRICS_PORT", "9101"))
+
 
 class EventConsumer:
     """One consumer in the group. Constructed with its collaborators so
@@ -199,6 +207,9 @@ def build_consumer(redis_client, consumer_name: str) -> EventConsumer:
 
 def main() -> int:
     configure_logging()
+    if METRICS_PORT:
+        from prometheus_client import start_http_server
+        start_http_server(METRICS_PORT)
     redis_client = get_redis_client()
     if redis_client is None:
         logger.error("REDIS_URL is not set — the stream consumer requires Redis")

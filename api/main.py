@@ -70,6 +70,7 @@ from explanation_bus import ExplanationBus
 from circuit_breaker import CircuitBreaker
 from feature_store import create_feature_store, seed_from_history
 from notifications import create_notifier
+from domain_metrics import register_domain_state_collector
 from feedback_export import export_feedback, to_json_summary
 import event_stream
 
@@ -210,6 +211,13 @@ _feature_store_seed = {"seeded_rows": 0}
 # worse escalation state. Opt-in: no-op until ESCALATION_WEBHOOK_URL is
 # set — see src/notifications.py.
 _notifier = create_notifier(_redis_client)
+
+# Fraud-shaped metrics (queue depth, live precision, LLM breaker state)
+# on the same GET /metrics text-format endpoint the HTTP-level metrics
+# already use — see src/domain_metrics.py. get_agent is defined further
+# down; the lambda defers the lookup to scrape time, by which point the
+# module is fully loaded.
+register_domain_state_collector(_review_queue, lambda: get_agent().breaker.state())
 
 
 def _generate_explanation(verdict_id: str, risk_score: float, top_factors: list, escalation: dict):

@@ -1,0 +1,33 @@
+# Scrape config for the observability compose profile
+# (`docker compose --profile observability up`). Targets the service
+# names compose gives each container — only reachable from inside the
+# compose network, same as redis:6379 already is.
+global:
+  scrape_interval: 15s
+
+scrape_configs:
+  # HTTP-level metrics (prometheus-fastapi-instrumentator) plus the
+  # domain metrics registered in src/domain_metrics.py — same endpoint,
+  # see api/main.py.
+  - job_name: risk-manager-backend
+    metrics_path: /metrics
+    static_configs:
+      - targets: ["backend:8000"]
+
+  # The consumer scores the real ingestion volume (src/stream_consumer.py)
+  # but isn't an HTTP service, so it runs its own metrics-only listener
+  # (METRICS_PORT, prometheus_client.start_http_server) rather than
+  # sharing the backend's port.
+  #
+  # `docker compose up --scale consumer=N` gives every replica the same
+  # service-name DNS entry; Prometheus's static target resolves to
+  # whichever replica Docker's round-robin hands it that scrape, not all
+  # of them. Fine for one consumer (the compose default); scaled beyond
+  # that, riskmgr_decisions_total from the consumer job undercounts and
+  # Docker Compose DNS round-robin is the reason — a real Prometheus
+  # deployment would need Docker Swarm/Kubernetes service discovery
+  # instead of a static target to scrape every replica.
+  - job_name: risk-manager-consumer
+    metrics_path: /metrics
+    static_configs:
+      - targets: ["consumer:9101"]
