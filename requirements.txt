@@ -1,5 +1,9 @@
 kagglehub==1.0.2
 pandas==3.0.3
+# pandas 3.x stores string columns as PyArrow-backed arrays by default, so
+# reading/writing any DataFrame (e.g. models/sample_data_cache.pkl) needs
+# this even though nothing here imports it directly.
+pyarrow==25.0.1
 numpy==2.5.1
 scikit-learn==1.9.0
 xgboost==3.4.1

@@ -41,6 +41,8 @@ factory convention as entity_memory.py.
 import logging
 import os
 
+import pandas as pd
+
 from graph_features import build_device_fingerprint
 
 logger = logging.getLogger(__name__)
@@ -257,10 +259,19 @@ def seed_from_history(store, df, limit: int | None = None) -> dict:
     if limit is not None:
         ordered = ordered.head(limit)
 
+    # build_device_fingerprint is a purely elementwise function (no
+    # cross-row aggregation), so computing it once over the whole batch
+    # gives byte-identical results to fingerprint_for()'s one-row-at-a-time
+    # calls — but avoids constructing a fresh DataFrame per row, which was
+    # the dominant cost of seeding a large sample (minutes, blocking the
+    # API from accepting any connection while the lifespan handler ran).
+    fingerprints = build_device_fingerprint(ordered).tolist()
+
     seeded = 0
-    for row in ordered.to_dict("records"):
+    for row, raw_fingerprint in zip(ordered.to_dict("records"), fingerprints):
         entity_id = row.get("entity_id")
-        store.record(entity_id, fingerprint_for(row), int(row.get("isFraud", 0) or 0))
+        fingerprint = None if pd.isna(raw_fingerprint) else str(raw_fingerprint)
+        store.record(entity_id, fingerprint, int(row.get("isFraud", 0) or 0))
         seeded += 1
     logger.info("Feature store seeded from history", extra={"rows": seeded})
     return {"seeded_rows": seeded}
